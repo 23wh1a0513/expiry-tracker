@@ -1,0 +1,1002 @@
+const express = require('express');
+const path = require('path');
+const bodyParser = require('body-parser');
+const cors = require('cors');
+const session = require('express-session');
+const bcrypt = require('bcryptjs');
+const mongoose = require('mongoose');
+const { Configuration, OpenAIApi } = require('openai');
+require('dotenv').config();
+
+const openaiConfig = process.env.OPENAI_API_KEY ? new Configuration({ apiKey: process.env.OPENAI_API_KEY }) : null;
+const openai = openaiConfig ? new OpenAIApi(openaiConfig) : null;
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// MongoDB connection (use MONGO_URI env var, fallback to local)
+const mongoURI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/expiry-tracker';
+
+mongoose.connect(mongoURI)
+    .then(() => console.log('Connected to MongoDB:', mongoURI))
+    .catch((err) => console.error('Error connecting to MongoDB:', err));
+
+mongoose.connection.on('connected', () => {
+    console.log('Mongoose connected to', mongoose.connection.host);
+});
+
+mongoose.connection.on('error', (err) => {
+    console.error('Mongoose connection error:', err);
+});
+
+mongoose.connection.on('disconnected', () => {
+    console.log('Mongoose disconnected');
+});
+
+// Define Item schema and model
+const itemSchema = new mongoose.Schema({
+    name: { type: String, required: true },
+    expiryDate: { type: Date, required: true },
+    owner: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+});
+
+// track if an item has been marked expired/archived by the server
+itemSchema.add({ expired: { type: Boolean, default: false } });
+const Item = mongoose.model('Item', itemSchema);
+
+// User model (kept in models/User.js)
+const User = require('./models/User');
+
+// Middleware
+app.use(bodyParser.json());
+app.use(cors());
+
+// Sessions (simple in-memory store for demo; use a persistent store in production)
+app.use(session({
+    secret: process.env.SESSION_SECRET || 'dev_secret_change_me',
+    resave: false,
+    saveUninitialized: false,
+    cookie: { maxAge: 1000 * 60 * 60 * 24 } // 1 day
+}));
+
+// (session middleware configured above)
+
+// Simple request logger for debugging
+app.use((req, res, next) => {
+    console.log(`[REQ] ${req.method} ${req.url}`);
+    if (req.body && Object.keys(req.body).length) console.log('[BODY]', req.body);
+    next();
+});
+
+// Simple auth middleware
+function requireLogin(req, res, next) {
+    if (req.session && req.session.userId) return next();
+    return res.status(401).json({ message: 'Not authenticated' });
+}
+
+// Serve frontend static files (expects frontend/ at repository root)
+app.use(express.static(path.join(__dirname, '..', 'frontend')));
+
+// Routes
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, '..', 'frontend', 'index.html'));
+});
+
+// Route to add an item
+app.post('/items', requireLogin, async (req, res) => {
+    try {
+        const { name, expiryDate } = req.body;
+        const owner = req.session.userId;
+        const newItem = new Item({ name, expiryDate, owner });
+        await newItem.save();
+        res.status(201).json({ message: 'Item added successfully', item: newItem });
+    } catch (error) {
+        // Handle mongoose validation errors clearly
+        if (error && error.name === 'ValidationError') {
+            const details = Object.keys(error.errors || {}).reduce((acc, k) => {
+                acc[k] = error.errors[k].message;
+                return acc;
+            }, {});
+            return res.status(400).json({ message: 'Validation failed', details });
+        }
+        console.error('Error adding item:', error);
+        res.status(500).json({ message: 'Error adding item' });
+    }
+});
+
+// Route to get all items
+app.get('/items', requireLogin, async (req, res) => {
+    try {
+        const userId = req.session.userId;
+        const includeExpired = req.query.includeExpired === 'true';
+        const base = { owner: userId };
+        const query = includeExpired ? base : { ...base, expired: false };
+        const items = await Item.find(query);
+        res.status(200).json(items);
+    } catch (error) {
+        res.status(500).json({ message: 'Error retrieving items', error });
+    }
+});
+
+// return only expired items
+app.get('/items/expired', requireLogin, async (req, res) => {
+    try {
+        const userId = req.session.userId;
+        const items = await Item.find({ expired: true, owner: userId });
+        res.status(200).json(items);
+    } catch (err) {
+        res.status(500).json({ message: 'Error retrieving expired items' });
+    }
+});
+
+// delete an item (mark consumed)
+app.delete('/items/:id', requireLogin, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const userId = req.session.userId;
+        const itm = await Item.findById(id);
+        if (!itm) return res.status(404).json({ message: 'Item not found' });
+        if (!itm.owner || itm.owner.toString() !== userId) return res.status(403).json({ message: 'Not allowed' });
+        await Item.findByIdAndDelete(id);
+        res.status(200).json({ message: 'Item removed' });
+    } catch (err) {
+        res.status(500).json({ message: 'Error deleting item' });
+    }
+});
+
+// ===== Authentication routes =====
+// Register a new user
+app.post('/register', async (req, res) => {
+    try {
+        const { username, password } = req.body || {};
+        if (!username || !password) return res.status(400).json({ message: 'username and password required' });
+        const existing = await User.findOne({ username });
+        if (existing) return res.status(409).json({ message: 'Username already exists' });
+        const hash = await bcrypt.hash(password, 10);
+        const user = new User({ username, passwordHash: hash });
+        await user.save();
+        req.session.userId = user._id;
+        req.session.username = user.username;
+        res.status(201).json({ message: 'User registered', username: user.username });
+    } catch (err) {
+        console.error('Register error', err);
+        res.status(500).json({ message: 'Error registering user' });
+    }
+});
+
+// Login
+app.post('/login', async (req, res) => {
+    try {
+        const { username, password } = req.body || {};
+        if (!username || !password) return res.status(400).json({ message: 'username and password required' });
+        const user = await User.findOne({ username });
+        if (!user) return res.status(401).json({ message: 'Invalid credentials' });
+        const ok = await bcrypt.compare(password, user.passwordHash);
+        if (!ok) return res.status(401).json({ message: 'Invalid credentials' });
+        req.session.userId = user._id;
+        req.session.username = user.username;
+        res.json({ message: 'Logged in', username: user.username });
+    } catch (err) {
+        console.error('Login error', err);
+        res.status(500).json({ message: 'Error logging in' });
+    }
+});
+
+// Logout
+app.post('/logout', (req, res) => {
+    req.session.destroy(err => {
+        if (err) return res.status(500).json({ message: 'Error logging out' });
+        res.json({ message: 'Logged out' });
+    });
+});
+
+// Current user
+app.get('/me', (req, res) => {
+    if (req.session && req.session.userId) return res.json({ username: req.session.username });
+    res.status(401).json({ message: 'Not logged in' });
+});
+
+// Smart planner: simple greedy schedule grouped by day
+app.get('/planner', async (req, res) => {
+    try {
+        // get non-expired items
+        const userId = req.session && req.session.userId;
+        if (!userId) return res.status(401).json({ message: 'Not authenticated' });
+
+        // ensure items with past expiry are excluded even if `expired` flag wasn't updated
+        const now = new Date();
+        now.setHours(0, 0, 0, 0);
+
+        const items = await Item.find({
+            expired: false,
+            owner: userId,
+            expiryDate: { $gte: now }
+        }).sort({ expiryDate: 1 });
+
+        // group by date (ISO date string), produce daily buckets
+        const planMap = {};
+        items.forEach(it => {
+            const d = new Date(it.expiryDate);
+            const iso = d.toISOString().slice(0,10);
+            if (!planMap[iso]) planMap[iso] = [];
+            planMap[iso].push({ _id: it._id, name: it.name, expiryDate: it.expiryDate });
+        });
+        // produce ordered array of {date, items}
+        const plan = Object.keys(planMap).sort().map(date => ({ date, items: planMap[date] }));
+        res.status(200).json(plan);
+    } catch (err) {
+        console.error('Planner error', err);
+        res.status(500).json({ message: 'Error generating planner' });
+    }
+});
+
+// items expiring within next `days` days (default 3)
+app.get('/items/soon', requireLogin, async (req, res) => {
+    try {
+        const userId = req.session.userId;
+        const days = parseInt(req.query.days || '3', 10);
+        const now = new Date();
+        const cutoff = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
+        const items = await Item.find({ expired: false, owner: userId, expiryDate: { $lte: cutoff } }).sort({ expiryDate: 1 });
+        res.status(200).json(items);
+    } catch (err) {
+        console.error('Error fetching soon items', err);
+        res.status(500).json({ message: 'Error fetching soon items' });
+    }
+});
+
+// Risk estimation for purchase: analyze historical items with similar names
+app.get('/risk', async (req, res) => {
+    try {
+        const name = (req.query.name || '').trim();
+        if (!name) return res.status(400).json({ message: 'name query required' });
+        // find items with name containing query (case-insensitive)
+        const regex = new RegExp(name.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&'), 'i');
+        // restrict to user's items if logged in
+        const userId = req.session && req.session.userId;
+        const filter = userId ? { name: regex, owner: userId } : { name: regex };
+        const items = await Item.find(filter);
+        if (!items || items.length === 0) return res.json({ count: 0, risk: 'unknown', details: null });
+        const now = new Date();
+        const stats = items.map(it => {
+            const days = Math.ceil((new Date(it.expiryDate) - now) / (1000*60*60*24));
+            return { id: it._id, days, expired: it.expired };
+        });
+        const count = stats.length;
+        const expiredCount = stats.filter(s => s.days < 0 || s.expired).length;
+        const within7 = stats.filter(s => s.days <= 7 && s.days >= 0).length;
+        const avgDays = Math.round(stats.reduce((a,b)=>a+b.days,0)/count);
+        // crude risk heuristic
+        let risk = 'low';
+        if (expiredCount / count > 0.3 || within7 / count > 0.4 || avgDays < 7) risk = 'high';
+        else if (within7 / count > 0.15 || avgDays < 21) risk = 'medium';
+        res.json({ count, expiredCount, within7, avgDays, risk, examples: stats.slice(0,5) });
+    } catch (err) {
+        console.error('Risk error', err);
+        res.status(500).json({ message: 'Error computing risk' });
+    }
+});
+
+// Simple chat endpoint: rule-based + access to inventory endpoints
+app.post('/chat', express.json(), async (req, res) => {
+    try {
+        const { message } = req.body || {};
+        if (!message) return res.status(400).json({ reply: 'Please send a message.' });
+        const msg = message.toLowerCase();
+        
+        // Extract userId from session (may be undefined if not logged in)
+        const userId = req.session && req.session.userId;
+        if (msg.includes('expiring') || msg.includes('soon') || msg.includes('about to expire')) {
+            const daysMatch = msg.match(/(\d+)\s*day/);
+            const days = daysMatch ? parseInt(daysMatch[1],10) : 3;
+            const now = new Date();
+            const cutoff = new Date(now.getTime() + days*24*60*60*1000);
+            const chatFilter = userId ? { expired: false, expiryDate: { $lte: cutoff }, owner: userId } : { expired: false, expiryDate: { $lte: cutoff } };
+            const items = await Item.find(chatFilter).limit(20).sort({ expiryDate:1 });
+            if (!items || items.length === 0) return res.json({ reply: `No items expiring in the next ${days} day(s).` });
+            const list = items.map(it => `${it.name} (expires ${new Date(it.expiryDate).toLocaleDateString()})`).join('\n');
+            return res.json({ reply: `Items expiring within ${days} day(s):\n${list}` });
+        }
+        
+        // intent: list all items
+        if (msg.includes('list') && (msg.includes('all') || msg.includes('items') || msg.includes('inventory'))) {
+            if (!userId) return res.json({ reply: 'Please log in to view your items.' });
+            const items = await Item.find({ owner: userId, expired: false }).limit(20);
+            if (!items || items.length === 0) return res.json({ reply: 'You have no items in your inventory.' });
+            const list = items.map(it => `${it.name} (expires ${new Date(it.expiryDate).toLocaleDateString()})`).join('\n');
+            return res.json({ reply: `Your items:\n${list}` });
+        }
+        // intent: risk estimate
+        if (msg.startsWith('risk of') || msg.startsWith('will') || msg.includes('risk')) {
+            // extract name
+            const m = msg.match(/(?:risk of|risk for|risk|will)\s+(?:a\s+)?(.+)/i);
+            const name = m ? m[1] : msg;
+            const resp = await fetchRisk(name, userId);
+
+            // Provide additional context based on item type
+            const itemName = name.toLowerCase();
+            let additionalAdvice = '';
+
+            if (itemName.includes('milk') || itemName.includes('dairy')) {
+                additionalAdvice = '\n💡 Dairy spoils quickly - check smell and appearance before using.';
+            } else if (itemName.includes('meat') || itemName.includes('chicken') || itemName.includes('fish')) {
+                additionalAdvice = '\n💡 Protein foods can harbor bacteria - cook to safe temperatures.';
+            } else if (itemName.includes('vegetable') || itemName.includes('fruit')) {
+                additionalAdvice = '\n💡 Produce wilts but is usually safe past expiry - check for mold.';
+            } else if (itemName.includes('bread') || itemName.includes('bakery')) {
+                additionalAdvice = '\n💡 Bread gets stale but is rarely dangerous - check for mold.';
+            }
+
+            return res.json({ reply: `Risk for "${name}": ${resp.risk}. Average days until expiry: ${resp.avgDays}. (${resp.count} samples)${additionalAdvice}` });
+        }
+        
+        // intent: show expiry/expired items
+        if (msg.includes('expired') && (msg.includes('show') || msg.includes('what') || msg.includes('have'))) {
+            if (!userId) return res.json({ reply: 'Please log in to view expired items.' });
+            const expiredItems = await Item.find({ expired: true, owner: userId }).sort({ expiryDate: -1 });
+            if (!expiredItems || expiredItems.length === 0) return res.json({ reply: 'You have no expired items.' });
+            const list = expiredItems.map(it => `${it.name} (expired ${new Date(it.expiryDate).toLocaleDateString()})`).join('\n');
+            return res.json({ reply: `Your expired items:\n${list}` });
+        }
+
+        // intent: show planner
+        if (msg.includes('plan') || msg.includes('schedule') || msg.includes('planner')) {
+            if (!userId) return res.json({ reply: 'Please log in to view your planner.' });
+            const items = await Item.find({ expired: false, owner: userId }).sort({ expiryDate: 1 });
+            if (!items || items.length === 0) return res.json({ reply: 'No items to plan for.' });
+            const planMap = {};
+            items.forEach(it => {
+                const d = new Date(it.expiryDate);
+                const iso = d.toISOString().slice(0,10);
+                if (!planMap[iso]) planMap[iso] = [];
+                planMap[iso].push(it.name);
+            });
+            const plan = Object.keys(planMap).sort().slice(0,7).map(date => 
+                `${new Date(date).toLocaleDateString()}: ${planMap[date].join(', ')}`
+            ).join('\n');
+            return res.json({ reply: `Your consumption plan:\n${plan}` });
+        }
+
+        // intent: specific item expiry/status checks
+        if (msg.includes('when does') || msg.includes('when will') || msg.includes('is the') || msg.includes('do i have') || msg.includes('tell me about') || msg.includes('is it') || msg.includes('can i eat')) {
+            // Extract item name from common patterns
+            let itemName = null;
+            const expirePattern = msg.match(/(?:when does|when will)\s+(?:the\s+)?(.+?)\s+(?:expire|go bad|spoil)/i);
+            const havePattern = msg.match(/(?:do i have|have i got)\s+(?:any\s+)?(.+)/i);
+            const tellPattern = msg.match(/tell me about\s+(?:my\s+|the\s+)?(.+)/i);
+            const canEatPattern = msg.match(/(?:can i eat|is it|is the|is)\s+(?:my\s+|the\s+)?(.+?)(?:\s+(?:spoiled|expired|safe|going bad))?$/i);
+
+            itemName = expirePattern?.[1] || havePattern?.[1] || tellPattern?.[1] || canEatPattern?.[1];
+
+            if (itemName) {
+                itemName = itemName.toLowerCase().trim();
+                if (!userId) return res.json({ reply: 'Please log in to check your items.' });
+
+                // Try exact match first
+                let items = await Item.find({ name: new RegExp(`^${itemName}$`, 'i'), owner: userId });
+
+                // If no exact match, try partial match
+                if (!items || items.length === 0) {
+                    items = await Item.find({ name: new RegExp(itemName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'), owner: userId });
+                }
+
+                if (!items || items.length === 0) {
+                    return res.json({ reply: `You don't have any "${itemName}" in your inventory. Add it first to track it!` });
+                }
+
+                const now = new Date();
+                let response = `**${itemName.charAt(0).toUpperCase() + itemName.slice(1)}** in your inventory:\n\n`;
+
+                items.forEach(item => {
+                    const expiryDate = new Date(item.expiryDate);
+                    const daysUntil = Math.ceil((expiryDate - now) / (1000*60*60*24));
+                    const status = item.expired ? '❌ EXPIRED' : (daysUntil <= 0 ? '🚨 EXPIRED TODAY' : daysUntil <= 3 ? '⚠️ EXPIRING SOON' : '✅ OK');
+                    response += `- Expires: ${expiryDate.toLocaleDateString()} (${daysUntil} days) ${status}\n`;
+                });
+
+                // Add safety advice if expired or expiring soon
+                const criticalItems = items.filter(i => {
+                    const daysUntil = Math.ceil((new Date(i.expiryDate) - now) / (1000*60*60*24));
+                    return i.expired || daysUntil <= 0;
+                });
+
+                if (criticalItems.length > 0) {
+                    response += '\n💡 Tip: Use or discard expired items. Check appearance and smell before consuming!';
+                }
+
+                return res.json({ reply: response });
+            }
+        }
+
+        // intent: snacks (HIGH PRIORITY - before generic grocery)
+        if (msg.includes('snack')) {
+            return res.json({ reply: `Healthy snack ideas:\n- Fresh fruit (apples, bananas, berries)\n- Yogurt with nuts\n- Vegetable sticks with hummus\n- Cheese and whole grain crackers\n- Trail mix (nuts, dried fruit, seeds)\n- Popcorn (air-popped)` });
+        }
+
+        // intent: substitutes (HIGH PRIORITY - before generic grocery)
+        if (msg.includes('substitute') || msg.includes('instead of')) {
+            return res.json({ reply: `Common ingredient substitutes:\n- Instead of butter: olive oil, applesauce, or yogurt\n- Instead of milk: almond milk, oat milk, or coconut milk\n- Instead of eggs: flaxseed mixture (1 tbsp flax + 3 tbsp water)\n- Instead of sugar: honey, maple syrup, or fruit\n- Instead of flour: almond flour or oat flour for baking` });
+        }
+
+        // Default: Use OpenAI for all other questions (recipes, meals, cooking tips, etc.)
+        if (openai) {
+            const aiReply = await generateOpenAIReply(message, userId);
+            return res.json({ reply: aiReply });
+        }
+
+        return res.json({ reply: "I'm your Expiry Tracker assistant! I can help with inventory management, recipes, grocery advice, and cooking tips. Say 'help' for more options." });
+    } catch (err) {
+        console.error('Chat error', err);
+        res.status(500).json({ reply: 'Error processing message' });
+    }
+});
+
+// Helper function for chat risk assessment
+async function fetchRisk(name, userId) {
+    if (!name) return { risk: 'unknown', count: 0, avgDays: 0 };
+    const regex = new RegExp(name.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&'), 'i');
+    const filter = userId ? { name: regex, owner: userId } : { name: regex };
+    const items = await Item.find(filter);
+    if (!items || items.length === 0) return { risk: 'unknown', count: 0, avgDays: 0 };
+    const now = new Date();
+    const stats = items.map(it => Math.ceil((new Date(it.expiryDate) - now) / (1000*60*60*24)));
+    const avgDays = Math.round(stats.reduce((a,b)=>a+b,0)/stats.length);
+    let risk = 'low';
+    if (avgDays < 7) risk = 'high'; else if (avgDays < 21) risk = 'medium';
+    return { risk, count: items.length, avgDays };
+}
+
+// Helper function for generating AI responses
+async function generateOpenAIReply(message, userId) {
+    if (!openai) return "I'm your Expiry Tracker assistant! I can help with inventory management, recipes, grocery advice, and cooking tips. Say 'help' for more options.";
+
+    try {
+        const userItems = userId ? await Item.find({ owner: userId, expired: false }).limit(20) : [];
+        const inventoryText = userItems.length
+            ? `You have the following unexpired items in inventory:\n${userItems.slice(0, 15).map(i => `- ${i.name} (expires ${new Date(i.expiryDate).toLocaleDateString()})`).join('\n')}`
+            : 'No items are currently in the inventory.';
+
+        const systemPrompt = `You are an assistant for an expiry tracking app called "Expiry Tracker". Help users manage their food inventory, reduce waste, and get recipe suggestions. Answer user questions clearly and be helpful. If the user asks about items or recipes, use their inventory context when possible. Provide simple kitchen/food advice. Keep responses concise.`;
+
+        const userPrompt = `User message: "${message}"
+
+${inventoryText}`;
+
+        const completion = await openai.createChatCompletion({
+            model: 'gpt-3.5-turbo',
+            messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt }
+            ],
+            max_tokens: 250,
+            temperature: 0.7
+        });
+        
+        const reply = completion.data?.choices?.[0]?.message?.content?.trim();
+        if (reply) return reply;
+    } catch (err) {
+        console.error('OpenAI error:', err);
+    }
+
+    return "I'm your Expiry Tracker assistant! I can help with recipes, meal planning, storage tips, and more. What would you like to know?";
+}
+
+// Scheduler: mark items expired if expiryDate < now
+async function markExpiredItems() {
+    try {
+        const now = new Date();
+        const res = await Item.updateMany({ expiryDate: { $lt: now }, expired: false }, { $set: { expired: true } });
+        if (res && res.modifiedCount) console.log(`Marked ${res.modifiedCount} items as expired`);
+    } catch (err) {
+        console.error('Error marking expired items:', err);
+    }
+}
+
+// Start the scheduler
+markExpiredItems();
+setInterval(markExpiredItems, 1000 * 60 * 60 * 6); // Check every 6 hours
+
+// Start server
+app.listen(PORT, () => {
+    console.log(`Server running at http://localhost:${PORT}`);
+});
+
+// Helper functions for chat
+async function fetchRisk(name, userId) {
+    if (!name) return { risk: 'unknown', count: 0, avgDays: 0 };
+    const regex = new RegExp(name.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&'), 'i');
+    const filter = userId ? { name: regex, owner: userId } : { name: regex };
+    const items = await Item.find(filter);
+    if (!items || items.length === 0) return { risk: 'unknown', count: 0, avgDays: 0 };
+    const now = new Date();
+    const stats = items.map(it => Math.ceil((new Date(it.expiryDate) - now) / (1000*60*60*24)));
+    const avgDays = Math.round(stats.reduce((a,b)=>a+b,0)/stats.length);
+    let risk = 'low';
+    if (avgDays < 7) risk = 'high'; else if (avgDays < 21) risk = 'medium';
+    return { risk, count: items.length, avgDays };
+}
+
+async function generateOpenAIReply(message, userId) {\nIngredients:\n- 500g chicken breast\n- 1 onion, chopped\n- 2 carrots, sliced\n- 2 celery stalks, chopped\n- 1L chicken broth\n- Salt, pepper, herbs\n\nInstructions:\n1. Sauté vegetables in pot for 5 minutes\n2. Add chicken and broth, bring to boil\n3. Simmer 20-25 minutes until chicken is cooked\n4. Remove chicken, shred, return to pot\n5. Season and serve hot`,
+                
+                'salad': `Fresh Garden Salad:\nIngredients:\n- Mixed greens (lettuce, spinach)\n- 1 cucumber, sliced\n- 2 tomatoes, chopped\n- 1/2 red onion, thinly sliced\n- Olive oil and vinegar dressing\n- Salt and pepper\n\nInstructions:\n1. Wash and chop all vegetables\n2. Combine in large bowl\n3. Drizzle with olive oil and vinegar\n4. Season with salt and pepper\n5. Toss gently and serve`,
+                
+                'sandwich': `Classic Sandwich:\nIngredients:\n- 2 slices bread\n- Sliced deli meat or cheese\n- Lettuce, tomato, onion\n- Mayo or mustard\n- Salt and pepper\n\nInstructions:\n1. Spread mayo/mustard on bread\n2. Layer meat, cheese, vegetables\n3. Season lightly\n4. Top with second bread slice\n5. Cut in half and enjoy`,
+                
+                'omelette': `Basic Omelette:\nIngredients:\n- 2-3 eggs\n- 1 tbsp milk\n- Salt and pepper\n- 1 tbsp butter\n- Optional fillings: cheese, vegetables, ham\n\nInstructions:\n1. Whisk eggs with milk, salt, pepper\n2. Heat butter in pan over medium heat\n3. Pour in egg mixture\n4. Cook until edges set (2-3 minutes)\n5. Add fillings, fold and serve`
+            };
+
+            // If asking for a specific recipe, try to match it
+            if (dish) {
+                const dishLower = dish.toLowerCase();
+                for (const [key, recipe] of Object.entries(recipes)) {
+                    if (dishLower.includes(key)) {
+                        return res.json({ reply: `Here's a simple ${key} recipe:\n\n${recipe}` });
+                    }
+                }
+            }
+
+            // Otherwise, try personalized recipe based on expiring items (if logged in)
+            if (userId) {
+                const now = new Date();
+                const cutoff = new Date(now.getTime() + 7*24*60*60*1000); // next 7 days
+                const expiringItems = await Item.find({ expired: false, expiryDate: { $lte: cutoff }, owner: userId }).sort({ expiryDate: 1 });
+                
+                if (expiringItems && expiringItems.length > 0) {
+                    // Filter out inappropriate items for recipes (snacks, processed foods, etc.)
+                    const inappropriateItems = ['chips', 'cookies', 'candy', 'snack', 'kurkure', 'lays', 'doritos', 'pringles', 'cheetos', 'popcorn', 'crackers', 'pretzels', 'chocolate', 'soda', 'juice', 'beer', 'wine', 'alcohol', 'condiment', 'sauce', 'ketchup', 'mustard', 'mayo', 'dressing', 'jam', 'jelly', 'peanut butter', 'honey', 'syrup', 'frozen meal', 'ready meal', 'microwave', 'instant', 'processed', 'canned soup', 'soup', 'frozen dinner', 'pizza', 'burger', 'hot dog', 'nugget', 'fry', 'fast food'];
+                    
+                    const suitableItems = expiringItems.filter(item => {
+                        const name = item.name.toLowerCase();
+                        return !inappropriateItems.some(inappropriate => name.includes(inappropriate));
+                    });
+                    
+                    if (suitableItems.length === 0) {
+                        return res.json({ reply: `You have expiring items, but they're not suitable for cooking (snacks, processed foods, etc.). Consider these general recipe ideas instead:\n\n🍝 Pasta with tomato sauce\n🥗 Fresh vegetable salad\n🍳 Simple omelette\n🥪 Classic sandwich\n\nAdd fresh ingredients like vegetables, meat, or dairy to get personalized suggestions!` });
+                    }
+                    
+                    const itemNames = suitableItems.map(it => it.name.toLowerCase());
+                    let recipe = '';
+                    
+                    // Simple recipe suggestions based on available ingredients
+                    if (itemNames.some(name => name.includes('milk') || name.includes('cheese'))) {
+                        recipe = '🍕 Cheese Quesadillas: Use your cheese and any tortillas you have. Heat tortillas, add cheese, fold and cook until melted. Add veggies if available.\n\n🧀 Mac and Cheese: Cook pasta, make a cheese sauce with your milk/cheese, mix together.';
+                    } else if (itemNames.some(name => name.includes('bread'))) {
+                        recipe = '🥪 Sandwiches: Use your bread with any meats, cheeses, or veggies you have. Try avocado toast or grilled cheese.\n\n🍞 Bread Pudding: Soak bread in milk/eggs, bake with cinnamon and sugar.';
+                    } else if (itemNames.some(name => name.includes('vegetable') || name.includes('lettuce') || name.includes('tomato'))) {
+                        recipe = '🥗 Fresh Salad: Chop your vegetables, add dressing (oil/vinegar or yogurt). Great with bread or as a side.\n\n🍲 Vegetable Stir-fry: Chop veggies, stir-fry with oil, garlic, and soy sauce. Serve over rice.';
+                    } else if (itemNames.some(name => name.includes('meat') || name.includes('chicken') || name.includes('beef'))) {
+                        recipe = '🍗 Simple Stir-fry: Cut meat into pieces, cook with vegetables and sauce.\n\n🥘 Stew: Slow cook meat with vegetables and broth for a hearty meal.';
+                    } else if (itemNames.some(name => name.includes('fruit'))) {
+                        recipe = '🍎 Fruit Salad: Mix your fruits together. Add yogurt for a parfait.\n\n🥧 Fruit Crisp: Mix fruits with oats, sugar, and butter, bake until bubbly.';
+                    } else {
+                        recipe = `Based on your expiring items (${itemNames.slice(0,3).join(', ')}), here are some ideas:\n\n🍲 Soup: Use any vegetables in broth\n🥘 Stir-fry: Quick cooking with oil and seasonings\n🍝 Pasta dish: Mix with sauce or veggies\n\nAdd more specific ingredients for better suggestions!`;
+                    }
+                    
+                    return res.json({ reply: `Recipe suggestions using your expiring items:\n\n${recipe}\n\n💡 Tip: Use items expiring soon first to reduce waste!` });
+                }
+            }
+
+            // Generic recipe suggestions
+            return res.json({ reply: `I know recipes for pasta, chicken soup, salad, sandwich, and omelette. You can ask:\n- "Recipe for salad"\n- "How to make pasta"\n- "Cook chicken soup"\n\n${userId ? 'Or log in to get personalized recipe suggestions based on your items!' : 'Log in to get personalized recipe suggestions based on your items!'}` });
+        }
+        
+        // intent: grocery shopping advice and meal planning
+        if (msg.includes('cook today') || msg.includes('should i cook') || msg.includes('what to cook') || msg.includes('what to make') || msg.includes('dinner') || msg.includes('meal') || msg.includes('buy') || msg.includes('shop') || msg.includes('grocery') || msg.includes('shopping') || msg.includes('purchase') || msg.includes('what should i')) {
+            if (msg.includes('cook today') || msg.includes('should i cook') || msg.includes('what to cook') || msg.includes('what to make') || msg.includes('dinner') || msg.includes('meal')) {
+                if (!userId) {
+                    return res.json({ reply: `For a simple meal today, consider:\n- Pasta with tomato sauce and vegetables\n- Rice bowls with any proteins and veggies\n- Sandwich with sides\n- Basic soup\n\nLog in to get personalized suggestions based on your ingredients!` });
+                }
+                const items = await Item.find({ expired: false, owner: userId }).limit(10).sort({ expiryDate: 1 });
+                
+                // Filter out inappropriate items for cooking suggestions
+                const inappropriateItems = ['chips', 'cookies', 'candy', 'snack', 'kurkure', 'lays', 'doritos', 'pringles', 'cheetos', 'popcorn', 'crackers', 'pretzels', 'chocolate', 'soda', 'juice', 'beer', 'wine', 'alcohol', 'condiment', 'sauce', 'ketchup', 'mustard', 'mayo', 'dressing', 'jam', 'jelly', 'peanut butter', 'honey', 'syrup', 'frozen meal', 'ready meal', 'microwave', 'instant', 'processed', 'canned soup', 'soup', 'frozen dinner', 'pizza', 'burger', 'hot dog', 'nugget', 'fry', 'fast food'];
+                
+                const suitableItems = items.filter(item => {
+                    const name = item.name.toLowerCase();
+                    return !inappropriateItems.some(inappropriate => name.includes(inappropriate));
+                });
+                
+                const itemList = suitableItems.length > 0 ? suitableItems.map(it => it.name).slice(0,3).join(', ') : 'no suitable cooking items';
+                
+                if (items.length === 0) {
+                    return res.json({ reply: 'You don\'t have any items in your inventory. Add some items first to get personalized meal suggestions!' });
+                }
+                
+                if (suitableItems.length === 0) {
+                    return res.json({ reply: 'You have items in your inventory, but they\'re not suitable for cooking (snacks, processed foods, etc.). Consider adding fresh ingredients like vegetables, meat, or dairy for meal suggestions!' });
+                }
+                
+                const itemNames = suitableItems.map(it => it.name.toLowerCase());
+                let suggestions = [];
+                
+                // Generate relevant suggestions based on actual inventory
+                if (itemNames.some(name => name.includes('bread'))) {
+                    suggestions.push('🥪 Sandwiches or toast with any spreads you have');
+                    suggestions.push('🍞 French toast or bread pudding (if you have eggs/milk)');
+                }
+                
+                if (itemNames.some(name => name.includes('milk') || name.includes('cheese'))) {
+                    suggestions.push('🧀 Cheese-based dishes like quesadillas or mac and cheese');
+                    suggestions.push('🥛 Smoothies or milk-based soups');
+                }
+                
+                if (itemNames.some(name => name.includes('vegetable') || name.includes('lettuce') || name.includes('tomato'))) {
+                    suggestions.push('🥗 Fresh salad with your vegetables');
+                    suggestions.push('🍲 Vegetable soup or stir-fry');
+                }
+                
+                if (itemNames.some(name => name.includes('meat') || name.includes('chicken') || name.includes('beef'))) {
+                    suggestions.push('🍗 Stir-fry or simple grilled meat dishes');
+                    suggestions.push('🥘 Stew or meat-based soup');
+                }
+                
+                if (itemNames.some(name => name.includes('pasta') || name.includes('rice') || name.includes('noodle'))) {
+                    suggestions.push('🍝 Pasta or rice dishes with available ingredients');
+                }
+                
+                if (itemNames.some(name => name.includes('fruit'))) {
+                    suggestions.push('🍎 Fruit-based desserts or smoothies');
+                }
+                
+                // If no specific suggestions, give generic ones
+                if (suggestions.length === 0) {
+                    suggestions = [
+                        '🍲 Simple soup with whatever you have',
+                        '🥘 Basic stir-fry with available ingredients',
+                        '🍝 Pasta dish with any sauces or veggies',
+                        '🥗 Salad if you have greens or vegetables'
+                    ];
+                }
+                
+                const suggestionText = suggestions.slice(0, 4).map(s => `- ${s}`).join('\n');
+                return res.json({ reply: `Based on what you have (${itemList}), you could make:\n${suggestionText}\n\n💡 Tip: Use items expiring soon first to reduce waste!` });
+            }
+            
+            if (msg.includes('buy') && (msg.includes('what') || msg.includes('should') || msg.includes('recommend'))) {
+                return res.json({ reply: `Shopping recommendations:\n- Buy items that are expiring soon in your inventory first\n- Get versatile basics: rice, pasta, canned tomatoes, beans\n- Fresh produce: seasonal items are cheaper and fresher\n- Proteins: chicken, eggs, beans for variety\n- Dairy: milk, cheese, yogurt\n- Pantry staples: salt, oil, spices, flour\n\nTell me what meals you want to cook, and I can suggest specific items!` });
+            }
+            
+            if (msg.includes('healthy') || msg.includes('diet')) {
+                return res.json({ reply: `Healthy grocery suggestions:\n- Fresh fruits and vegetables\n- Lean proteins (chicken, fish, beans)\n- Whole grains (brown rice, quinoa, oats)\n- Nuts and seeds\n- Low-fat dairy or alternatives\n- Herbs and spices for flavor without calories` });
+            }
+            
+            if (msg.includes('snack') || msg.includes('snacks')) {
+                return res.json({ reply: `Healthy snack ideas:\n- Fresh fruit (apples, bananas, berries)\n- Yogurt with nuts\n- Vegetable sticks with hummus\n- Cheese and whole grain crackers\n- Trail mix (nuts, dried fruit, seeds)\n- Popcorn (air-popped)` });
+            }
+            
+            if (msg.includes('substitute') || msg.includes('instead of')) {
+                return res.json({ reply: `Common ingredient substitutes:\n- Instead of butter: olive oil, applesauce, or yogurt\n- Instead of milk: almond milk, oat milk, or coconut milk\n- Instead of eggs: flaxseed mixture (1 tbsp flax + 3 tbsp water)\n- Instead of sugar: honey, maple syrup, or fruit\n- Instead of flour: almond flour or oat flour for baking` });
+            }
+            
+            if (msg.includes('storage') || msg.includes('store') || msg.includes('keep fresh')) {
+                return res.json({ reply: `Food storage tips:\n- Refrigerate dairy, meat, and leftovers within 2 hours\n- Store fruits and vegetables in the crisper drawer\n- Keep pantry staples in cool, dry place\n- Freeze items you won't use soon\n- Use your expiry tracker to monitor dates!` });
+            }
+            
+            // Generic grocery response
+            return res.json({ reply: `I can help with grocery questions! Ask about:\n- What to cook for dinner/meals\n- Healthy eating\n- Snack suggestions\n- Ingredient substitutes\n- Food storage tips\n\nWhat would you like to know?` });
+        }
+        
+        // intent: cooking tips and techniques (including storage)
+        if (msg.includes('how to') || msg.includes('how do') || msg.includes('technique') || msg.includes('tip') || msg.includes('store') || msg.includes('keep') || msg.includes('boil') || msg.includes('bake') || msg.includes('fry') || msg.includes('cook') || msg.includes('prepare')) {
+            // Specific storage tips
+            if (msg.includes('store') || msg.includes('keep')) {
+                const storageGuides = {
+                    'bread': '🍞 Store bread:\n- Keep in a bread box or paper bag at room temperature\n- Avoid refrigerator (dries it out)\n- For longer storage, freeze in airtight container\n- Can last 3-5 days at room temperature, weeks if frozen',
+                    'cheese': '🧀 Store cheese:\n- Wrap tightly in parchment or wax paper, then plastic wrap\n- Keep in cheese drawer (coldest part of fridge)\n- Soft cheeses last 1-2 weeks\n- Hard cheeses last several weeks\n- Check for mold before eating',
+                    'milk': '🥛 Store milk:\n- Keep in main refrigerator section (not door)\n- Door is warmer due to opening/closing\n- Use within 5-7 days of opening\n- Check smell and appearance for spoilage\n- Unopened milk lasts longer',
+                    'vegetable': '🥬 Store vegetables:\n- Most go in crisper drawer of fridge\n- Keep humidity moderate (not too dry, not too wet)\n- Store separately if possible to prevent ethylene damage\n- Check regularly for wilting or decay',
+                    'herb': '🌿 Store herbs:\n- Fresh: Store in damp paper towel in fridge\n- Or place stems in water like flowers\n- Dried: Keep in cool, dark, dry place\n- Use within 1-2 months for best flavor',
+                    'meat': '🍗 Store meat:\n- Keep in coldest part of fridge\n- Use within 1-2 days of purchase\n- For longer storage, freeze immediately\n- Thaw in fridge, not at room temperature',
+                    'fruit': '🍎 Store fruit:\n- Most fruits go in crisper drawer\n- Keep separate from vegetables\n- Citrus can be stored at room temperature\n- Bananas separate from other fruits to slow ripening',
+                    'sugar': '🍯 Store sugar:\n- Keep in cool, dry place in airtight container\n- Brown sugar: store with moisture shield (bread piece) to prevent hardening\n- Avoid humid areas (kitchen near sink)\n- Lasts indefinitely if kept dry\n- Powdered sugar: prone to caking, use airtight container',
+                    'flour': '🌾 Store flour:\n- Keep in cool, dry place or refrigerator\n- Store in airtight container to prevent bugs and moisture\n- Room temperature: lasts 6-8 months\n- Refrigerator: lasts up to 1 year\n- Freezer: lasts indefinitely',
+                    'rice': '🍚 Store rice:\n- Keep in sealed container in cool, dry place\n- White rice: lasts indefinitely\n- Brown rice: lasts 6-8 months (goes rancid faster due to oil)\n- Store away from pests\n- Can be frozen for extended storage',
+                    'pasta': '🍝 Store pasta:\n- Keep in cool, dry place in original box or airtight container\n- Unopened: lasts 2+ years\n- Cooked pasta: refrigerate 3-5 days in airtight container\n- Freeze cooked pasta up to 2 months',
+                    'oil': '🛢️ Store oil:\n- Keep in cool, dark place away from heat and light\n- Olive oil: best within 2 years, refrigerate if opened during hot weather\n- Vegetable oil: lasts 1-2 years\n- Avoid sunlight to prevent oxidation',
+                    'spices': '🧂 Store spices:\n- Keep in cool, dry place in airtight containers\n- Away from heat, light, and moisture\n- Last 1-2 years for maximum flavor\n- Store away from stove (heat causes flavor loss)',
+                    'eggs': '🥚 Store eggs:\n- Keep in original carton in refrigerator (not door)\n- Pointed end down to keep yolk centered\n- Last 3-5 weeks from purchase date\n- Check for cracks before using',
+                    'yogurt': '🥛 Store yogurt:\n- Keep refrigerated at 40°F or below\n- Use within 1-2 weeks of opening\n- Check date on container\n- Don\'t store in door (temperature fluctuates)',
+                    'butter': '🧈 Store butter:\n- Refrigerator: lasts 1-3 months\n- Freezer: lasts up to 6 months\n- Keep in original wrapper or airtight container\n- Away from strong odors',
+                    'leftovers': '🍲 Store leftovers:\n- Refrigerate within 2 hours of cooking\n- Use within 3-4 days\n- Store in airtight containers\n- Label with date for tracking',
+                    'nuts': '🥜 Store nuts:\n- Cool, dry place in airtight container\n- Refrigerator: lasts 6-9 months\n- Freezer: lasts 1-2 years\n- Protect from light and moisture'
+                };
+
+                const query = msg.toLowerCase();
+
+                // First check for exact matches
+                for (const [item, guide] of Object.entries(storageGuides)) {
+                    if (query.includes(item)) {
+                        return res.json({ reply: guide });
+                    }
+                }
+
+                // If no exact match, try to extract item name and provide general advice
+                const storePatterns = [
+                    /how to store (.+)/i,
+                    /how do i store (.+)/i,
+                    /store (.+) how/i,
+                    /keep (.+) fresh/i,
+                    /(.+) storage/i
+                ];
+
+                let itemName = null;
+                for (const pattern of storePatterns) {
+                    const match = msg.match(pattern);
+                    if (match && match[1]) {
+                        itemName = match[1].toLowerCase().trim();
+                        break;
+                    }
+                }
+
+                if (itemName) {
+                    // Categorize the item and give appropriate advice
+                    const item = itemName.toLowerCase();
+
+                    // Dairy products
+                    if (item.includes('milk') || item.includes('cream') || item.includes('yogurt') || item.includes('cheese') || item.includes('butter')) {
+                        return res.json({ reply: `🧊 Store ${itemName}:\n- Keep refrigerated at 40°F (4°C) or below\n- Store in coldest part of fridge (not door)\n- Check expiration dates regularly\n- Use within recommended time after opening\n- Freeze dairy products if you won't use them soon` });
+                    }
+
+                    // Fresh produce
+                    if (item.includes('vegetable') || item.includes('fruit') || item.includes('lettuce') || item.includes('tomato') || item.includes('apple') || item.includes('banana') || item.includes('orange') || item.includes('potato') || item.includes('carrot') || item.includes('onion') || item.includes('garlic') || item.includes('celery') || item.includes('broccoli') || item.includes('spinach') || item.includes('cucumber') || item.includes('pepper') || item.includes('mushroom') || item.includes('cabbage') || item.includes('cauliflower')) {
+                        return res.json({ reply: `🥬 Store ${itemName}:\n- Most fresh produce goes in crisper drawer\n- Keep fruits and vegetables separate (ethylene gas)\n- Some fruits (citrus, apples) can be stored at room temperature\n- Check regularly for spoilage\n- Wash just before eating, not before storing` });
+                    }
+
+                    // Meat, poultry, fish
+                    if (item.includes('meat') || item.includes('chicken') || item.includes('beef') || item.includes('pork') || item.includes('fish') || item.includes('seafood') || item.includes('turkey') || item.includes('lamb') || item.includes('salmon') || item.includes('tuna') || item.includes('shrimp')) {
+                        return res.json({ reply: `🍖 Store ${itemName}:\n- Keep in coldest part of refrigerator\n- Use within 1-2 days of purchase\n- Freeze immediately for longer storage\n- Thaw in refrigerator, never at room temperature\n- Store raw meat below ready-to-eat foods` });
+                    }
+
+                    // Grains and dry goods
+                    if (item.includes('flour') || item.includes('rice') || item.includes('pasta') || item.includes('cereal') || item.includes('bread') || item.includes('sugar') || item.includes('oat') || item.includes('quinoa') || item.includes('barley') || item.includes('bean') || item.includes('lentil') || item.includes('noodle')) {
+                        return res.json({ reply: `🌾 Store ${itemName}:\n- Keep in cool, dry place in airtight containers\n- Away from heat, moisture, and pests\n- Pantry staples last 6-12 months\n- Check for bugs or moisture regularly\n- Refrigerate flour if you live in hot, humid climate` });
+                    }
+
+                    // Herbs and spices
+                    if (item.includes('herb') || item.includes('spice') || item.includes('salt') || item.includes('pepper')) {
+                        return res.json({ reply: `🌿 Store ${itemName}:\n- Keep in cool, dark place in airtight containers\n- Dried herbs/spices: away from heat and light\n- Fresh herbs: damp paper towel in fridge or water\n- Use within 6-12 months for best flavor\n- Store away from stove to prevent flavor loss` });
+                    }
+
+                    // Eggs
+                    if (item.includes('egg')) {
+                        return res.json({ reply: `🥚 Store ${itemName}:\n- Keep in original carton in refrigerator\n- Store in main fridge section (not door)\n- Pointed end down to keep yolk centered\n- Last 3-5 weeks from purchase date\n- Check for cracks before using` });
+                    }
+
+                    // Oils and condiments
+                    if (item.includes('oil') || item.includes('vinegar') || item.includes('sauce') || item.includes('dressing')) {
+                        return res.json({ reply: `🛢️ Store ${itemName}:\n- Keep in cool, dark place away from heat\n- Refrigerate opened bottles during hot weather\n- Check for separation or off odors\n- Most last 6-12 months after opening\n- Shake before using if needed` });
+                    }
+
+                    // Leftovers and cooked food
+                    if (item.includes('leftover') || item.includes('cooked') || item.includes('soup') || item.includes('stew')) {
+                        return res.json({ reply: `🍲 Store ${itemName}:\n- Refrigerate within 2 hours of cooking\n- Use airtight containers\n- Most leftovers last 3-4 days\n- Reheat to 165°F (74°C) before eating\n- Label with date for tracking` });
+                    }
+
+                    // General advice for unknown items
+                    return res.json({ reply: `📦 Store ${itemName}:\n- Check the package for specific storage instructions\n- Refrigerate perishable items\n- Keep dry goods in cool, dry place\n- Use airtight containers to maintain freshness\n- Check expiration dates regularly\n- If unsure, err on the side of caution and refrigerate\n\nFor specific advice, try asking about similar items I know about!` });
+                }
+
+                return res.json({ reply: `General storage tips:\n- Produce goes in crisper drawer\n- Dairy in coldest part of fridge\n- Meat on bottom shelf\n- Keep raw meat away from ready-to-eat food\n- Check expiry dates regularly\n- Most shelf-stable items in cool, dry place\n\nI can provide specific storage advice for many items. What would you like to store?` });
+            }
+            
+            // Specific cooking techniques
+            const tips = {
+                'boil pasta': 'Bring salted water to boil (about 4 cups water, 1 tsp salt), add pasta, cook 8-12 minutes until al dente. Reserve pasta water for sauce!',
+                'boil egg': 'Cover eggs with cold water, bring to boil, then simmer 4 minutes (soft), 7 minutes (medium), or 12 minutes (hard). Cool in ice water.',
+                'chop onion': 'Cut off ends, peel, cut in half, slice thinly or dice by cutting parallel strips then perpendicular.',
+                'basic stir fry': 'Heat oil until shimmering, add aromatics (garlic/onion) for flavor, add vegetables, then protein, finish with sauce. High heat, constant stirring.',
+                'make soup': 'Sauté aromatics, add broth/liquid, add vegetables/meat, simmer 20-30 minutes. Season at the end.',
+                'bake chicken': 'Season, bake at 375°F (190°C) for 25-30 minutes per pound. Internal temp should reach 165°F (74°C).',
+                'pan sear': 'Heat oil until smoking, add meat dry, don\'t move for 3-4 minutes for crust, flip once. Rest 5 minutes after cooking.',
+                'roast vegetable': 'Toss with oil, salt, pepper. Spread on baking sheet. Bake at 425°F (220°C) for 20-30 minutes until golden and tender.'
+            };
+            
+            const query = msg.toLowerCase();
+            for (const [key, tip] of Object.entries(tips)) {
+                // Check if all words in the key appear in the query
+                const keyWords = key.split(' ');
+                const allMatch = keyWords.every(word => query.includes(word));
+                if (allMatch) {
+                    return res.json({ reply: `💡 ${key.charAt(0).toUpperCase() + key.slice(1)}:\n\n${tip}` });
+                }
+            }
+            
+            // General cooking tips
+            if (msg.includes('bake') || msg.includes('baking')) {
+                return res.json({ reply: `Baking tips:\n- Preheat oven fully before putting food in\n- Use oven mitts - handles get hot!\n- Center rack is usually best for even baking\n- Rotate pans halfway through for even results\n- Use a timer and check a few minutes early` });
+            }
+            
+            if (msg.includes('fry') || msg.includes('frying')) {
+                return res.json({ reply: `Frying tips:\n- Heat oil to proper temperature (test with a drop of water - should sizzle)\n- Don't overcrowd the pan\n- Use tongs to flip/turn food\n- Drain on paper towels to remove excess oil\n- Season immediately after frying` });
+            }
+            
+            if (msg.includes('season') || msg.includes('flavor')) {
+                return res.json({ reply: `Seasoning tips:\n- Taste as you go - you can always add more\n- Salt enhances natural flavors\n- Acid (lemon, vinegar) brightens dishes\n- Herbs add freshness, spices add warmth\n- Start with less - you can always add more!` });
+            }
+            
+            return res.json({ reply: `Cooking tips I can help with:\n- How to boil pasta/eggs\n- Chopping techniques\n- Stir-fry, soup, baking, pan-searing tips\n- Vegetable roasting\n- Seasoning and flavoring\n- Storage for different foods\n\nAsk: "how to boil pasta" or "how to store bread" for example!` });
+        }
+        
+        // intent: help or what can you do
+        if (msg.includes('help') || msg.includes('what can you') || msg.includes('commands') || msg.includes('?')) {
+            return res.json({ reply: "I can help you with:\n- List all your items\n- Show items expiring soon\n- Generate a consumption plan\n- Assess risk for products\n- Add items to your inventory\n- **Recipes using expiring items**\n- Grocery shopping advice\n- Cooking tips and techniques\n\nTry asking: 'give me a recipe', 'what should I buy', 'how to boil pasta', or 'cooking tips'" });
+        }
+        
+        // intent: add item (basic parsing)
+        if (msg.includes('add') || msg.includes('new item')) {
+            if (!userId) return res.json({ reply: 'Please log in to add items.' });
+            // Simple parsing - look for patterns like "add milk expires 2024-12-25"
+            const addMatch = msg.match(/add\s+(.+?)\s+(?:expires?|expiring)\s+(\d{4}-\d{2}-\d{2})/i);
+            if (addMatch) {
+                const name = addMatch[1].trim();
+                const expiryDate = addMatch[2];
+                try {
+                    const newItem = new Item({ name, expiryDate: new Date(expiryDate), owner: userId });
+                    await newItem.save();
+                    return res.json({ reply: `Added "${name}" expiring on ${new Date(expiryDate).toLocaleDateString()}.` });
+                } catch (error) {
+                    return res.json({ reply: 'Error adding item. Please check the date format (YYYY-MM-DD).' });
+                }
+            } else {
+                return res.json({ reply: 'To add an item, say something like: "add milk expires 2024-12-25"' });
+            }
+        }
+        
+        // intent: grocery questions
+        if (msg.includes('grocery') || msg.includes('shopping') || msg.includes('buy') || msg.includes('what should i') || msg.includes('recommend')) {
+            if (msg.includes('dinner') || msg.includes('meal')) {
+                return res.json({ reply: `For a simple dinner, consider:\n- Pasta with tomato sauce and vegetables\n- Grilled chicken with rice and salad\n- Stir-fry vegetables with tofu or meat\n- Soup and sandwiches\n\nCheck what you already have in your inventory first!` });
+            }
+            
+            if (msg.includes('healthy') || msg.includes('diet')) {
+                return res.json({ reply: `Healthy grocery suggestions:\n- Fresh fruits and vegetables\n- Lean proteins (chicken, fish, beans)\n- Whole grains (brown rice, quinoa, oats)\n- Nuts and seeds\n- Low-fat dairy or alternatives\n- Herbs and spices for flavor without calories` });
+            }
+            
+            // Generic grocery response
+            return res.json({ reply: `I can help with:\n- What meals to cook based on your inventory\n- What to buy for grocery shopping\n- Healthy eating and snack ideas\n- Ingredient substitutes\n- Where to buy items and pricing tips\n- Allergen and dietary information\n\nTry: "what should I buy?" or "healthy snacks" for example!` });
+        }
+        
+        // intent: cooking tips and questions
+        if (msg.includes('how do i') || msg.includes('tips') || msg.includes('advice') || msg.includes('cooking')) {
+            if (msg.includes('boil') || msg.includes('boiling')) {
+                return res.json({ reply: `Boiling tips:\n- Use plenty of water (about 4 cups per cup of pasta/rice)\n- Add salt after water boils\n- Stir occasionally to prevent sticking\n- Test doneness frequently\n- Drain immediately when done` });
+            }
+            
+            if (msg.includes('bake') || msg.includes('baking')) {
+                return res.json({ reply: `Baking tips:\n- Preheat oven fully before putting food in\n- Use oven mitts - handles get hot!\n- Center rack is usually best for even baking\n- Rotate pans halfway through for even results\n- Use a timer and check a few minutes early` });
+            }
+            
+            if (msg.includes('fry') || msg.includes('frying')) {
+                return res.json({ reply: `Frying tips:\n- Heat oil to proper temperature (test with a drop of water - should sizzle)\n- Don't overcrowd the pan\n- Use tongs to flip/turn food\n- Drain on paper towels to remove excess oil\n- Season immediately after frying` });
+            }
+            
+            if (msg.includes('season') || msg.includes('flavor')) {
+                return res.json({ reply: `Seasoning tips:\n- Taste as you go - you can always add more\n- Salt enhances natural flavors\n- Acid (lemon, vinegar) brightens dishes\n- Herbs add freshness, spices add warmth\n- Start with less - you can always add more!` });
+            }
+            
+            // Generic cooking response
+            return res.json({ reply: `Cooking tips I can help with:\n- Boiling techniques\n- Baking advice\n- Frying tips\n- Seasoning and flavoring\n- General kitchen advice\n\nWhat cooking question do you have?` });
+        }
+        
+        // intent: help or what can you do
+        if (msg.includes('help') || msg.includes('what can you') || msg.includes('commands') || msg.includes('?')) {
+            return res.json({ reply: "I can help you with:\n- 📦 Inventory management (list items, add items, expiring items)\n- 📅 Consumption planning and scheduling\n- 🧾 Risk assessment for products\n- 🍳 Recipes using your expiring items\n- 🍽️ Meal planning based on your inventory\n- 🛒 Grocery shopping advice and tips\n- 🥗 Healthy eating and snack suggestions\n- 🔄 Ingredient substitutes\n- 🗄️ Food storage tips\n- 👨‍🍳 Cooking techniques and tips\n\nTry asking: 'what should I cook today?', 'give me a recipe', 'healthy snacks', 'how to boil pasta', or 'what should I buy'" });
+        }
+        
+        // intent: general grocery questions
+        if (msg.includes('where') || msg.includes('store') || msg.includes('shop') || msg.includes('market') || msg.includes('supermarket')) {
+            if (msg.includes('where') && (msg.includes('buy') || msg.includes('find') || msg.includes('get'))) {
+                return res.json({ reply: `I don't have specific store information, but most grocery stores carry:\n- Fresh produce in the produce section\n- Dairy products in the dairy aisle\n- Meat and seafood in the meat department\n- Pantry staples in the center aisles\n- Frozen items in the freezer section\n\nCheck your local grocery store or use store apps for specific locations!` });
+            }
+        }
+        
+        if (msg.includes('price') || msg.includes('cost') || msg.includes('expensive') || msg.includes('cheap')) {
+            return res.json({ reply: `Grocery pricing tips:\n- Buy generic/store brands to save money\n- Shop sales and use coupons\n- Buy in bulk for staples you use often\n- Consider seasonal produce (cheaper and fresher)\n- Plan meals around sales items\n- Use a shopping app to compare prices\n\nRemember: quality and freshness are more important than the lowest price!` });
+        }
+        
+        if (msg.includes('organic') || msg.includes('natural') || msg.includes('fresh')) {
+            return res.json({ reply: `Fresh vs. organic considerations:\n- Organic: Grown without synthetic pesticides, often more expensive\n- Local/fresh: Often better taste and nutrition, supports local farmers\n- Conventional: Usually cheaper, still safe and nutritious\n- Frozen: Can be just as nutritious as fresh, often cheaper\n- Canned: Long shelf life, convenient, still healthy in moderation\n\nChoose based on your budget, availability, and preferences!` });
+        }
+        
+        if (msg.includes('allergen') || msg.includes('allergy') || msg.includes('gluten') || msg.includes('dairy') || msg.includes('nut')) {
+            return res.json({ reply: `Allergen awareness tips:\n- Always read ingredient labels carefully\n- Look for allergen warnings on packaging\n- Common allergens: nuts, dairy, eggs, soy, wheat, shellfish\n- Cross-contamination can occur in processing\n- When dining out, ask about ingredients and preparation\n- Consider allergen-free alternatives when shopping\n\nIf you have severe allergies, consult with a healthcare professional for guidance.` });
+        }
+        
+        // default canned
+        if (openai) {
+            const aiReply = await generateOpenAIReply(message, userId);
+            return res.json({ reply: aiReply });
+        }
+
+        return res.json({ reply: "I'm your Expiry Tracker assistant! I can help with inventory management, recipes, grocery advice, and cooking tips. Say 'help' for more options." });
+    } catch (err) {
+        console.error('Chat error', err);
+        res.status(500).json({ reply: 'Error processing message' });
+    }
+});
+
+// Helper function for chat risk assessment
+async function fetchRisk(name, userId) {
+    if (!name) return { risk: 'unknown', count: 0, avgDays: 0 };
+    const regex = new RegExp(name.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&'), 'i');
+    const filter = userId ? { name: regex, owner: userId } : { name: regex };
+    const items = await Item.find(filter);
+    if (!items || items.length === 0) return { risk: 'unknown', count: 0, avgDays: 0 };
+    const now = new Date();
+    const stats = items.map(it => Math.ceil((new Date(it.expiryDate) - now) / (1000*60*60*24)));
+    const avgDays = Math.round(stats.reduce((a,b)=>a+b,0)/stats.length);
+    let risk = 'low';
+    if (avgDays < 7) risk = 'high'; else if (avgDays < 21) risk = 'medium';
+    return { risk, count: items.length, avgDays };
+}
+
+async function generateOpenAIReply(message, userId) {
+    if (!openai) return "I'm your Expiry Tracker assistant! I can help with inventory management, recipes, grocery advice, and cooking tips.";
+
+    const userItems = userId ? await Item.find({ owner: userId, expired: false }).limit(20) : [];
+    const inventoryText = userItems.length
+        ? `You have the following unexpired items in inventory:\n${userItems.slice(0, 15).map(i => `- ${i.name} (expires ${new Date(i.expiryDate).toLocaleDateString()})`).join('\n')}`
+        : 'No items are currently in the inventory.';
+
+    const systemPrompt = `You are an assistant for an expiry tracking app. Answer user questions clearly and be helpful. If the user asks about items, use the inventory context when possible. Provide simple kitchen/food advice, but avoid medical or legal advice.`;
+
+    const userPrompt = `User message: "${message}"
+
+${inventoryText}`;
+
+    try {
+        const completion = await openai.createChatCompletion({
+            model: 'gpt-3.5-turbo',
+            messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt }
+            ],
+            max_tokens: 250,
+            temperature: 0.7
+        });
+        const reply = completion.data?.choices?.[0]?.message?.content?.trim();
+        if (reply) return reply;
+    } catch (err) {
+        console.error('OpenAI chat error', err);
+    }
+
+    return "I'm your Expiry Tracker assistant! I can help with inventory management, recipes, grocery advice, and cooking tips. Say 'help' for more options.";
+}
+
+// Scheduler: mark items expired if expiryDate < now
+async function markExpiredItems() {
+    try {
+        const now = new Date();
+        const res = await Item.updateMany({ expiryDate: { $lt: now }, expired: false }, { $set: { expired: true } });
+        if (res && res.nModified) console.log(`Marked ${res.nModified} items as expired`);
+    } catch (err) {
+        console.error('Error marking expired items', err);
+    }
+}
+
+// Run once on startup and then every 6 hours
+mongoose.connection.once('open', () => {
+    markExpiredItems();
+    setInterval(markExpiredItems, 1000 * 60 * 60 * 6);
+});
+
+// Graceful shutdown (use disconnect Promise-compatible API)
+const shutDown = () => {
+    console.log('Shutting down server...');
+    mongoose.disconnect()
+        .then(() => {
+            console.log('Mongo connection closed. Exiting process.');
+            process.exit(0);
+        })
+        .catch((err) => {
+            console.error('Error during mongoose disconnect:', err);
+            process.exit(1);
+        });
+};
+
+process.on('SIGINT', shutDown);
+process.on('SIGTERM', shutDown);
+
+app.listen(PORT, () => {
+    console.log(`Server is running on http://localhost:${PORT}`);
+});

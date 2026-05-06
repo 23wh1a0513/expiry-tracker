@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Planner - Expiry Tracker</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="app-header">
+    <div class="header-inner">
+        <a href="index.html" class="app-title">TrackMyExpiry AI</a>
+        <div class="header-actions">
+            <a href="login.html" class="login-link">Login</a>
+        </div>
+    </div>
+</header>
+<div class="container">
+    <section class="card">
+        <h3>Planner</h3>
+        <div class="planner-hero">
+            <img src="planner-bg.jpg" alt="Planner background image" class="planner-hero-img">
+            <div class="planner-hero-text">Stay ahead of expiry dates with your personalized meal plan</div>
+        </div>
+        <div id="planner"></div>
+        <div style="margin-top:12px">
+            <button id="refreshPlan" class="btn">Refresh Plan</button>
+        </div>
+    </section>
+</div>
+<script>
+const API_BASE = 'http://localhost:3000';
+
+async function loadPlan() {
+    const el = document.getElementById('planner');
+    el.innerHTML = 'Loading...';
+    try {
+        const res = await fetch(`${API_BASE}/planner`, { credentials: 'include' });
+        if (!res.ok) throw new Error('Planner fetch failed');
+        const plan = await res.json();
+        if (!plan || plan.length === 0) {
+            el.innerHTML = '<div>No suggestions</div>';
+            return;
+        }
+        el.innerHTML = '';
+        plan.forEach(slot => {
+            const card = document.createElement('div');
+            card.className = 'item-card safe';
+            card.style.padding = '10px';
+            card.style.marginBottom = '8px';
+            const date = document.createElement('div');
+            date.innerHTML = `<strong>${slot.date}</strong>`;
+            card.appendChild(date);
+            const ul = document.createElement('ul');
+            slot.items.forEach(it => {
+                const li = document.createElement('li');
+                li.innerHTML = `${it.name} <button class="btn small" data-id="${it._id}">Mark consumed</button>`;
+                ul.appendChild(li);
+            });
+            card.appendChild(ul);
+            el.appendChild(card);
+        });
+        // attach mark consumed handlers
+        document.querySelectorAll('button[data-id]').forEach(b => b.addEventListener('click', async (e) => {
+            const id = e.currentTarget.getAttribute('data-id');
+            if (!confirm('Mark this item consumed (will remove)?')) return;
+            await fetch(`${API_BASE}/items/${id}`, { method: 'DELETE', credentials: 'include' });
+            loadPlan();
+        }));
+    } catch (err) {
+        el.innerHTML = '<div>Error loading plan</div>';
+        console.error(err);
+    }
+}
+
+document.getElementById('refreshPlan').addEventListener('click', loadPlan);
+document.addEventListener('DOMContentLoaded', loadPlan);
+
+
+</script>
+</body>
+</html>

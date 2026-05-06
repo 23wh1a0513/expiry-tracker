@@ -1,0 +1,1326 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TrackMyExpiry AI - Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+</head>
+<body>
+<header class="app-header">
+    <div class="header-inner">
+        <a href="index.html" class="app-title">TrackMyExpiry AI</a>
+        <div class="header-actions" id="authActions">
+            <button id="openLoginBtn" class="login-link">Login</button>
+            <button id="openRegisterBtn" class="login-link">Register</button>
+        </div>
+    </div>
+</header>
+<!-- Landing Hero -->
+<div class="landing-hero">
+    <div class="landing-content">
+        <h1>Smart Grocery Expiry Tracker</h1>
+        <p>Manage your groceries, reduce waste, and stay ahead of expiry dates.</p>
+        <div class="landing-actions">
+            <button id="openLoginBtnHero" class="btn btn-primary">Login</button>
+            <button id="openRegisterBtnHero" class="btn btn-secondary">Register</button>
+        </div>
+    </div>
+</div>
+
+<!-- Login Modal -->
+<div id="loginModal" class="modal hidden">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2>Login</h2>
+            <button class="close-btn" id="closeLoginModal" type="button">&times;</button>
+        </div>
+        <form id="loginModalForm" class="modal-form">
+            <div class="form-group">
+                <label for="loginUsername">Username *</label>
+                <input type="text" id="loginUsername" name="username" required placeholder="Your username">
+            </div>
+            <div class="form-group">
+                <label for="loginPassword">Password *</label>
+                <input type="password" id="loginPassword" name="password" required placeholder="Your password">
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn-cancel" id="cancelLoginModal">Cancel</button>
+                <button type="submit" class="btn-submit">Login</button>
+            </div>
+            <div id="loginError" class="auth-msg"></div>
+        </form>
+    </div>
+</div>
+
+<!-- Register Modal -->
+<div id="registerModal" class="modal hidden">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2>Register</h2>
+            <button class="close-btn" id="closeRegisterModal" type="button">&times;</button>
+        </div>
+        <form id="registerModalForm" class="modal-form">
+            <div class="form-group">
+                <label for="registerUsername">Username *</label>
+                <input type="text" id="registerUsername" name="username" required placeholder="Choose a username">
+            </div>
+            <div class="form-group">
+                <label for="registerPassword">Password *</label>
+                <input type="password" id="registerPassword" name="password" required placeholder="Create a password">
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn-cancel" id="cancelRegisterModal">Cancel</button>
+                <button type="submit" class="btn-submit">Register</button>
+            </div>
+            <div id="registerError" class="auth-msg"></div>
+        </form>
+    </div>
+</div>
+
+<!-- Main Container -->
+<div class="main-container hidden">
+
+    <!-- Stats Cards Section -->
+    <section class="stats-section">
+        <div class="stat-card total-card">
+            <div class="stat-icon">📋</div>
+            <div class="stat-content">
+                <p class="stat-label">Total Items</p>
+                <h2 class="stat-number" id="totalItems">0</h2>
+            </div>
+        </div>
+        
+        <div class="stat-card safe-card">
+            <div class="stat-icon">✓</div>
+            <div class="stat-content">
+                <p class="stat-label">Safe Items</p>
+                <h2 class="stat-number" id="safeItems">0</h2>
+            </div>
+        </div>
+        
+        <div class="stat-card warning-card">
+            <div class="stat-icon">⚠️</div>
+            <div class="stat-content">
+                <p class="stat-label">Near Expiry</p>
+                <h2 class="stat-number" id="warningItems">0</h2>
+            </div>
+        </div>
+        
+        <div class="stat-card danger-card">
+            <div class="stat-icon">✕</div>
+            <div class="stat-content">
+                <p class="stat-label">Expired</p>
+                <h2 class="stat-number" id="expiredItems">0</h2>
+            </div>
+        </div>
+    </section>
+
+    <!-- Tab Navigation -->
+    <div class="tabs-section">
+        <div class="tabs">
+            <button class="tab-btn active" data-tab="my-items">
+                <span class="tab-icon">📑</span>
+                My Items
+            </button>
+            <button class="tab-btn" data-tab="expired">
+                <span class="tab-icon">✕</span>
+                Expired Items
+            </button>
+            <button class="tab-btn" data-tab="planner">
+                <span class="tab-icon">📅</span>
+                Planner
+            </button>
+            <button class="tab-btn" data-tab="risk-check">
+                <span class="tab-icon">🔍</span>
+                Risk Check
+            </button>
+            <button class="tab-btn" data-tab="ai-chat">
+                <span class="tab-icon">💬</span>
+                AI Chat
+            </button>
+            <button class="tab-btn" data-tab="analytics">
+                <span class="tab-icon">📊</span>
+                Analytics
+            </button>
+        </div>
+    </div>
+
+    <!-- My Items Tab Content -->
+    <section class="content-section" id="my-items">
+        <div class="section-header">
+            <h2>My Items</h2>
+            <div class="action-buttons">
+                <button class="btn-refresh" id="refreshBtn" onclick="loadItems()">
+                    🔄 REFRESH
+                </button>
+                <button class="btn-add" onclick="openAddModal()">
+                    + ADD ITEM
+                </button>
+            </div>
+        </div>
+        <div id="notifyArea" class="notify-area"></div>
+        <ul id="itemsList" class="items-grid">
+            <!-- items will be loaded here -->
+        </ul>
+    </section>
+
+    <!-- Planner Tab Content -->
+    <section class="content-section hidden" id="expired">
+        <div class="section-header">
+            <h2>✕ Expired Items</h2>
+            <button class="btn-refresh" onclick="loadExpiredItems()">🔄 REFRESH</button>
+        </div>
+        <p class="section-subtitle">Items that have already expired. Consider discarding or disposing responsibly.</p>
+        <ul id="expiredItemsList" class="items-grid">
+            <!-- expired items will be loaded here -->
+        </ul>
+    </section>
+
+    <!-- Planner Tab Content -->
+    <section class="content-section hidden" id="planner">
+        <div class="section-header">
+            <h2>📅 Smart Planner</h2>
+            <button class="btn-refresh" onclick="loadPlanner()">🔄 REFRESH PLAN</button>
+        </div>
+        <p class="section-subtitle">Organized by expiry date. Plan your consumption wisely!</p>
+        <div id="plannerContainer" class="planner-container"></div>
+    </section>
+
+    <!-- Risk Check Tab Content -->
+    <section class="content-section hidden" id="risk-check">
+        <div class="section-header">
+            <h2>🔍 Risk Check</h2>
+        </div>
+        <p class="section-subtitle">Analyze product expiry history and assess purchase risk</p>
+        <div class="risk-form">
+            <input type="text" id="riskInput" placeholder="Enter product name (e.g., Milk, Bread)...">
+            <button class="btn-submit" onclick="checkRisk()">Check Risk</button>
+        </div>
+        <div id="riskResult" class="risk-result"></div>
+    </section>
+
+    <!-- AI Chat Tab Content -->
+    <section class="content-section hidden" id="ai-chat">
+        <div class="section-header">
+            <h2>💬 AI Chat Assistant</h2>
+        </div>
+        <p class="section-subtitle">Ask about expiring items, product risks, or get suggestions</p>
+        <div id="chatBox" class="chat-box"></div>
+        <div class="chat-input-area">
+            <input type="text" id="chatInput" placeholder="Ask me anything... (e.g., 'What's expiring soon?')">
+            <button class="btn-submit" id="sendBtn">Send</button>
+        </div>
+    </section>
+
+    <!-- Analytics Tab Content -->
+    <section class="content-section hidden" id="analytics">
+        <div class="section-header">
+            <h2>📊 Analytics Dashboard</h2>
+            <button class="btn-refresh" onclick="loadAnalytics()">🔄 REFRESH</button>
+        </div>
+        <p class="section-subtitle">Track your grocery patterns and expiry trends</p>
+        
+        <div class="analytics-grid">
+            <div class="analytics-card">
+                <h3>📈 Items by Status</h3>
+                <canvas id="statusChart" width="200" height="200"></canvas>
+            </div>
+            
+            <div class="analytics-card">
+                <h3>🥕 Top Tracked Items</h3>
+                <div id="topItemsList" class="analytics-list"></div>
+            </div>
+        </div>
+    </section>
+</div>
+
+<!-- Add Item Modal -->
+<div id="addModal" class="modal hidden">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2>Add New Item</h2>
+            <button class="close-btn" onclick="closeAddModal()">&times;</button>
+        </div>
+        <form id="addForm" class="modal-form">
+            <div class="form-group">
+                <label for="itemName">Item Name *</label>
+                <div class="input-with-voice">
+                    <input type="text" id="itemName" name="name" placeholder="e.g., Milk, Medicine, etc." required>
+                    <button type="button" class="voice-btn" id="voiceInputBtn" title="Click to speak">🎤</button>
+                </div>
+            </div>
+            <div class="form-group">
+                <label for="expiryDate">Expiry Date *</label>
+                <div class="input-with-voice">
+                    <input type="date" id="expiryDate" name="expiryDate" required>
+                    <button type="button" class="voice-btn" id="voiceDateBtn" title="Click to speak date">🎤</button>
+                </div>
+            </div>
+            <div id="voiceStatus" class="voice-status hidden"></div>
+            <div class="modal-actions">
+                <button type="button" class="btn-cancel" onclick="closeAddModal()">Cancel</button>
+                <button type="submit" class="btn-submit">Add Item</button>
+            </div>
+        </form>
+    </div>
+</div>
+<script>
+const API_BASE = '';
+
+async function getCurrentUser() {
+    try {
+        const res = await fetch(`${API_BASE}/me`, { credentials: 'include' });
+        if (!res.ok) return null;
+        return res.json();
+    } catch {
+        return null;
+    }
+}
+
+async function updateAuthActions() {
+    const authEl = document.getElementById('authActions');
+    if (!authEl) return;
+
+    const user = await getCurrentUser();
+    if (user && user.username) {
+        authEl.innerHTML = `
+            <span class="auth-user">Hello, ${user.username}</span>
+            <button class="btn-logout" id="logoutBtn">Sign Out</button>
+        `;
+        document.getElementById('logoutBtn').addEventListener('click', async () => {
+            await fetch(`${API_BASE}/logout`, { method: 'POST', credentials: 'include' });
+            await updateAuthActions();
+            await initLanding();
+        });
+    } else {
+        authEl.innerHTML = `
+            <button id="openLoginBtn" class="login-link">Login</button>
+            <button id="openRegisterBtn" class="login-link">Register</button>
+        `;
+        document.getElementById('openLoginBtn')?.addEventListener('click', openLoginModal);
+        document.getElementById('openRegisterBtn')?.addEventListener('click', openRegisterModal);
+    }
+}
+
+document.addEventListener('DOMContentLoaded', async () => {
+    await updateAuthActions();
+    await initLanding();
+
+    document.getElementById('openLoginBtnHero')?.addEventListener('click', openLoginModal);
+    document.getElementById('openRegisterBtnHero')?.addEventListener('click', openRegisterModal);
+
+    document.getElementById('closeLoginModal')?.addEventListener('click', closeLoginModal);
+    document.getElementById('cancelLoginModal')?.addEventListener('click', closeLoginModal);
+    document.getElementById('loginModalForm')?.addEventListener('submit', submitLoginModal);
+
+    document.getElementById('closeRegisterModal')?.addEventListener('click', closeRegisterModal);
+    document.getElementById('cancelRegisterModal')?.addEventListener('click', closeRegisterModal);
+    document.getElementById('registerModalForm')?.addEventListener('submit', submitRegisterModal);
+
+    // initial content
+});
+
+async function ensureLoggedIn() {
+    const user = await getCurrentUser();
+    if (!user) {
+        window.location.href = 'login.html';
+        return false;
+    }
+    return true;
+}
+
+
+
+async function initLanding() {
+    const user = await getCurrentUser();
+    const hero = document.querySelector('.landing-hero');
+    const dashboard = document.querySelector('.main-container');
+
+    if (user && user.username) {
+        // already logged in -> show dashboard, hide hero
+        hero?.classList.add('hidden');
+        dashboard?.classList.remove('hidden');
+    } else {
+        // not logged in -> show hero (with Login button)
+        hero?.classList.remove('hidden');
+        dashboard?.classList.add('hidden');
+    }
+}
+
+function openLoginModal() {
+    document.getElementById('loginModal').classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+    document.getElementById('loginError').textContent = '';
+}
+
+function closeLoginModal() {
+    document.getElementById('loginModal').classList.add('hidden');
+    document.body.style.overflow = 'auto';
+    document.getElementById('loginModalForm').reset();
+    document.getElementById('loginError').textContent = '';
+}
+
+function openRegisterModal() {
+    document.getElementById('registerModal').classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+    document.getElementById('registerError').textContent = '';
+}
+
+function closeRegisterModal() {
+    document.getElementById('registerModal').classList.add('hidden');
+    document.body.style.overflow = 'auto';
+    document.getElementById('registerModalForm').reset();
+    document.getElementById('registerError').textContent = '';
+}
+
+async function submitRegisterModal(event) {
+    event.preventDefault();
+    const username = document.getElementById('registerUsername').value.trim();
+    const password = document.getElementById('registerPassword').value;
+    const errorEl = document.getElementById('registerError');
+    if (!username || !password) {
+        errorEl.textContent = 'Please enter username and password';
+        return;
+    }
+
+    try {
+        const res = await fetch(`${API_BASE}/register`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password })
+        });
+
+        if (res.ok) {
+            closeRegisterModal();
+            await updateAuthActions();
+            await initLanding();
+            loadItems();
+            loadExpiredItems();
+            loadPlanner();
+            alert('Registration successful!');
+        } else {
+            const data = await res.json().catch(() => ({ message: 'Registration failed' }));
+            errorEl.textContent = data.message || 'Registration failed. Try another username.';
+        }
+    } catch (err) {
+        errorEl.textContent = 'Network error while registering';
+        console.error(err);
+    }
+}
+
+async function submitLoginModal(event) {
+    event.preventDefault();
+    const username = document.getElementById('loginUsername').value.trim();
+    const password = document.getElementById('loginPassword').value;
+    const errorEl = document.getElementById('loginError');
+    if (!username || !password) {
+        errorEl.textContent = 'Please enter username and password';
+        return;
+    }
+
+    try {
+        const res = await fetch(`${API_BASE}/login`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password })
+        });
+
+        if (res.ok) {
+            closeLoginModal();
+            await updateAuthActions();
+            await initLanding();
+            loadItems();
+            loadExpiredItems();
+            loadPlanner();
+            alert('Login successful!');
+        } else {
+            const data = await res.json().catch(() => ({ message: 'Login failed' }));
+            errorEl.textContent = data.message || 'Login failed. Please check credentials.';
+        }
+    } catch (err) {
+        errorEl.textContent = 'Network error while logging in';
+        console.error(err);
+    }
+}
+
+function daysUntil(dateStr) {
+    const now = new Date();
+    const d = new Date(dateStr);
+    const diff = d - now;
+    return Math.ceil(diff / (1000 * 60 * 60 * 24));
+}
+
+function formatDate(dateStr){
+    const d = new Date(dateStr);
+    return d.toLocaleDateString();
+}
+
+function getItemIcon(status) {
+    if (status === 'safe') return '✓';
+    if (status === 'warn') return '⚠️';
+    if (status === 'danger') return '✕';
+    return '📦';
+}
+
+async function loadItems() {
+    try {
+        const res = await fetch(`${API_BASE}/items`, { credentials: 'include' });
+        const items = await res.json();
+        const ul = document.getElementById('itemsList');
+        
+        // Update stats
+        let totalItems = 0, safeItems = 0, warningItems = 0, expiredItems = 0;
+        
+        ul.innerHTML = '';
+        if (!items || items.length === 0) {
+            ul.innerHTML = '<li class="no-items">No items added yet. Click "ADD ITEM" to get started!</li>';
+            updateStats(0, 0, 0, 0);
+            return;
+        }
+        
+        items.forEach(i => {
+            totalItems++;
+            const li = document.createElement('li');
+            const days = daysUntil(i.expiryDate);
+            let statusClass = 'safe';
+            
+            if (days < 0) {
+                statusClass = 'danger';
+                expiredItems++;
+            } else if (days <= 3) {
+                statusClass = 'warn';
+                warningItems++;
+            } else {
+                safeItems++;
+            }
+            
+            li.className = `item-card ${statusClass}`;
+            const daysText = days < 0 ? 'Expired' : (days === 0 ? 'Today' : (days + ' day' + (days > 1 ? 's' : '')));
+            const icon = getItemIcon(statusClass);
+            
+            li.innerHTML = `
+                <div class="item-icon">${icon}</div>
+                <div class="item-content">
+                    <strong class="item-name">${i.name}</strong>
+                    <div class="item-date">Expires: ${formatDate(i.expiryDate)}</div>
+                </div>
+                <span class="item-days ${statusClass}-text">${daysText}</span>
+            `;
+            ul.appendChild(li);
+        });
+        
+        updateStats(totalItems, safeItems, warningItems, expiredItems);
+    } catch (err) {
+        console.error('Error loading items', err);
+        document.getElementById('itemsList').innerHTML = '<li class="no-items">Error loading items</li>';
+    }
+}
+
+function updateStats(total, safe, warning, expired) {
+    document.getElementById('totalItems').textContent = total;
+    document.getElementById('safeItems').textContent = safe;
+    document.getElementById('warningItems').textContent = warning;
+    document.getElementById('expiredItems').textContent = expired;
+}
+
+// ===== EXPIRED ITEMS FUNCTIONALITY =====
+async function loadExpiredItems() {
+    try {
+        const res = await fetch(`${API_BASE}/items?includeExpired=true`, { credentials: 'include' });
+        const allItems = await res.json();
+        
+        // Filter expired items
+        const expiredItems = allItems.filter(item => {
+            const days = daysUntil(item.expiryDate);
+            return days < 0;
+        });
+        
+        const ul = document.getElementById('expiredItemsList');
+        ul.innerHTML = '';
+        
+        if (!expiredItems || expiredItems.length === 0) {
+            ul.innerHTML = '<li class="no-items">No expired items. Great job keeping things fresh!</li>';
+            return;
+        }
+        
+        expiredItems.forEach(i => {
+            const li = document.createElement('li');
+            li.className = 'item-card danger';
+            const days = daysUntil(i.expiryDate);
+            const daysText = Math.abs(days) + ' day' + (Math.abs(days) > 1 ? 's' : '') + ' ago';
+            
+            li.innerHTML = `
+                <div class="item-icon">✕</div>
+                <div class="item-content">
+                    <strong class="item-name">${i.name}</strong>
+                    <div class="item-date">Expired: ${formatDate(i.expiryDate)}</div>
+                </div>
+                <div style="display: flex; gap: 0.5rem;">
+                    <span class="item-days danger-text">${daysText}</span>
+                    <button class="btn-small" onclick="removeItem('${i._id}')">🗑 Remove</button>
+                </div>
+            `;
+            ul.appendChild(li);
+        });
+    } catch (err) {
+        console.error('Error loading expired items', err);
+        document.getElementById('expiredItemsList').innerHTML = '<li class="no-items">Error loading expired items</li>';
+    }
+}
+
+async function removeItem(itemId) {
+    if (!confirm('Remove this item permanently?')) return;
+    try {
+        await fetch(`${API_BASE}/items/${itemId}`, { method: 'DELETE', credentials: 'include' });
+        loadItems();
+        loadExpiredItems();
+    } catch (err) {
+        console.error('Error removing item', err);
+        alert('Error removing item');
+    }
+}
+
+function openAddModal() {
+    // Check if user is logged in
+    fetch('/me', { credentials: 'include' })
+        .then(res => {
+            if (!res.ok) {
+                alert('Please log in first to add items.');
+                window.location.href = 'login.html';
+                return;
+            }
+            document.getElementById('addModal').classList.remove('hidden');
+            document.body.style.overflow = 'hidden';
+        })
+        .catch(err => {
+            alert('Please log in first to add items.');
+            window.location.href = 'login.html';
+        });
+}
+
+function closeAddModal() {
+    document.getElementById('addModal').classList.add('hidden');
+    document.body.style.overflow = 'auto';
+    document.getElementById('addForm').reset();
+}
+
+// Tab switching
+document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.content-section').forEach(s => s.classList.add('hidden'));
+        
+        e.target.closest('.tab-btn').classList.add('active');
+        const tabName = e.target.closest('.tab-btn').dataset.tab;
+        document.getElementById(tabName).classList.remove('hidden');
+        
+        // Load analytics data when analytics tab is clicked
+        if (tabName === 'analytics') {
+            await loadAnalytics();
+        }
+    });
+});
+
+// Form submission
+document.getElementById('addForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const name = document.getElementById('itemName').value.trim();
+    const expiryDate = document.getElementById('expiryDate').value;
+    
+    if (!name || !expiryDate) {
+        alert('Please fill in all fields');
+        return;
+    }
+    
+    try {
+        const res = await fetch(`${API_BASE}/items`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, expiryDate })
+        });
+        
+        if (res.ok) {
+            closeAddModal();
+            loadItems();
+            alert('✓ Item added successfully!');
+        } else {
+            const err = await res.json().catch(() => ({ message: 'Unknown error' }));
+            alert('Error: ' + (err.message || 'Failed to add item'));
+        }
+    } catch (err) {
+        console.error('Add item error', err);
+        alert('Error adding item: ' + err.message);
+    }
+});
+
+// Close modal when clicking outside
+document.getElementById('addModal').addEventListener('click', (e) => {
+    if (e.target.id === 'addModal') {
+        closeAddModal();
+    }
+});
+
+// ===== VOICE INPUT FOR ADD ITEM =====
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+let voiceRecognition = null;
+let isListening = false;
+let currentVoiceField = null;
+
+if (SpeechRecognition) {
+    voiceRecognition = new SpeechRecognition();
+    voiceRecognition.continuous = false;
+    voiceRecognition.interimResults = false; // Changed to false for better reliability
+    voiceRecognition.lang = 'en-US';
+    voiceRecognition.maxAlternatives = 1;
+}
+
+function startVoiceInput() {
+    if (!voiceRecognition) {
+        alert('Voice input not supported in your browser. Please use Chrome, Edge, or Safari.');
+        return;
+    }
+
+    // Check if already listening
+    if (isListening) {
+        voiceRecognition.abort();
+        isListening = false;
+        updateVoiceStatus('');
+        updateVoiceBtn(false);
+        return;
+    }
+
+    // Request microphone permission and start listening
+    navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(() => {
+            isListening = true;
+            currentVoiceField = 'name';
+            updateVoiceStatus('🎤 Listening for item name...');
+            updateVoiceBtn(true);
+
+            voiceRecognition.onstart = () => {
+                console.log('Voice input started for name');
+                updateVoiceStatus('🎤 Listening... Speak now');
+            };
+
+            voiceRecognition.onresult = (event) => {
+                console.log('Voice result received:', event);
+                const result = event.results[0];
+                if (result.isFinal) {
+                    const transcript = result[0].transcript.trim();
+                    console.log('Final transcript for name:', transcript);
+                    if (transcript) {
+                        document.getElementById('itemName').value = transcript;
+                        updateVoiceStatus('✓ Got: "' + transcript + '"');
+                        setTimeout(() => updateVoiceStatus(''), 2000);
+                    } else {
+                        updateVoiceStatus('❌ No speech detected. Try again.');
+                    }
+                }
+            };
+
+            voiceRecognition.onerror = (event) => {
+                console.error('Voice recognition error:', event.error);
+                let errorMessage = 'Voice recognition failed';
+                switch(event.error) {
+                    case 'no-speech':
+                        errorMessage = 'No speech detected. Try speaking louder.';
+                        break;
+                    case 'audio-capture':
+                        errorMessage = 'Microphone access denied. Please allow microphone access.';
+                        break;
+                    case 'not-allowed':
+                        errorMessage = 'Microphone permission denied. Please enable microphone access.';
+                        break;
+                    case 'network':
+                        errorMessage = 'Network error. Check your connection.';
+                        break;
+                    default:
+                        errorMessage = 'Error: ' + event.error;
+                }
+                updateVoiceStatus('❌ ' + errorMessage);
+                isListening = false;
+                updateVoiceBtn(false);
+            };
+
+            voiceRecognition.onend = () => {
+                console.log('Voice recognition ended');
+                isListening = false;
+                updateVoiceBtn(false);
+                if (currentVoiceField === 'name') {
+                    setTimeout(() => updateVoiceStatus(''), 3000);
+                }
+            };
+
+            try {
+                voiceRecognition.start();
+                console.log('Voice recognition started');
+            } catch (e) {
+                console.error('Failed to start voice recognition:', e);
+                updateVoiceStatus('❌ Failed to start voice recognition');
+                isListening = false;
+                updateVoiceBtn(false);
+            }
+        })
+        .catch((err) => {
+            console.error('Microphone permission denied:', err);
+            alert('Microphone access is required for voice input. Please allow microphone access and try again.');
+        });
+}
+
+function parseSpokenDate(transcript) {
+    const text = transcript.toLowerCase().trim();
+    const now = new Date();
+
+    console.log('Parsing date from:', text);
+
+    // Handle relative dates
+    if (text.includes('today')) {
+        return formatDateForInput(now);
+    }
+    if (text.includes('tomorrow')) {
+        const tomorrow = new Date(now);
+        tomorrow.setDate(now.getDate() + 1);
+        return formatDateForInput(tomorrow);
+    }
+    if (text.includes('day after tomorrow') || text.includes('day after')) {
+        const dayAfter = new Date(now);
+        dayAfter.setDate(now.getDate() + 2);
+        return formatDateForInput(dayAfter);
+    }
+
+    // Handle "in X days"
+    const daysMatch = text.match(/in (\d+) days?/);
+    if (daysMatch) {
+        const days = parseInt(daysMatch[1]);
+        const futureDate = new Date(now);
+        futureDate.setDate(now.getDate() + days);
+        return formatDateForInput(futureDate);
+    }
+
+    // Handle "next week"
+    if (text.includes('next week')) {
+        const nextWeek = new Date(now);
+        nextWeek.setDate(now.getDate() + 7);
+        return formatDateForInput(nextWeek);
+    }
+
+    // Handle specific dates like "January 15" or "Jan 15"
+    const monthNames = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+    const shortMonths = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+
+    for (let i = 0; i < monthNames.length; i++) {
+        if (text.includes(monthNames[i]) || text.includes(shortMonths[i])) {
+            const dayMatch = text.match(/(\d+)/);
+            if (dayMatch) {
+                const day = parseInt(dayMatch[1]);
+                let year = now.getFullYear();
+
+                // If the date has passed this year, assume next year
+                const dateThisYear = new Date(year, i, day);
+                if (dateThisYear < now) {
+                    year++;
+                }
+
+                const date = new Date(year, i, day);
+                return formatDateForInput(date);
+            }
+        }
+    }
+
+    // Try to parse as MM/DD or DD/MM
+    const dateMatch = text.match(/(\d{1,2})[\/\-](\d{1,2})/);
+    if (dateMatch) {
+        const num1 = parseInt(dateMatch[1]);
+        const num2 = parseInt(dateMatch[2]);
+        let month, day;
+
+        // Assume MM/DD if first number <= 12, otherwise DD/MM
+        if (num1 <= 12) {
+            month = num1 - 1;
+            day = num2;
+        } else {
+            month = num2 - 1;
+            day = num1;
+        }
+
+        let year = now.getFullYear();
+        const date = new Date(year, month, day);
+
+        // If date has passed, assume next year
+        if (date < now) {
+            year++;
+            date.setFullYear(year);
+        }
+
+        return formatDateForInput(date);
+    }
+
+    // Try to parse as YYYY-MM-DD
+    const isoMatch = text.match(/(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
+    if (isoMatch) {
+        const date = new Date(isoMatch[1], parseInt(isoMatch[2]) - 1, isoMatch[3]);
+        if (!isNaN(date.getTime())) {
+            return formatDateForInput(date);
+        }
+    }
+
+    console.log('Could not parse date from:', text);
+    return null; // Could not parse
+}
+
+function formatDateForInput(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+
+function updateVoiceStatus(message) {
+    const statusEl = document.getElementById('voiceStatus');
+    if (message) {
+        statusEl.textContent = message;
+        statusEl.classList.remove('hidden');
+    } else {
+        statusEl.classList.add('hidden');
+        statusEl.textContent = '';
+    }
+}
+
+function updateVoiceBtn(listening, buttonId = 'voiceInputBtn') {
+    const btn = document.getElementById(buttonId);
+    if (listening) {
+        btn.classList.add('recording');
+        btn.textContent = '⏹️';
+        btn.title = 'Click to stop recording';
+    } else {
+        btn.classList.remove('recording');
+        btn.textContent = '🎤';
+        btn.title = 'Click to speak';
+    }
+}
+
+// Wire up voice button
+document.getElementById('voiceInputBtn').addEventListener('click', (e) => {
+    e.preventDefault();
+    startVoiceInput();
+});
+
+document.getElementById('voiceDateBtn').addEventListener('click', (e) => {
+    e.preventDefault();
+    startVoiceDateInput();
+});
+
+function startVoiceDateInput() {
+    if (!voiceRecognition) {
+        alert('Voice input not supported in your browser. Please use Chrome, Edge, or Safari.');
+        return;
+    }
+
+    if (isListening) {
+        voiceRecognition.abort();
+        isListening = false;
+        updateVoiceStatus('');
+        updateVoiceBtn(false, 'voiceDateBtn');
+        return;
+    }
+
+    // Request microphone permission and start listening
+    navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(() => {
+            isListening = true;
+            currentVoiceField = 'date';
+            updateVoiceStatus('🎤 Listening for expiry date...');
+            updateVoiceBtn(true, 'voiceDateBtn');
+
+            voiceRecognition.onstart = () => {
+                console.log('Voice input started for date');
+                updateVoiceStatus('🎤 Listening... Speak date now');
+            };
+
+            voiceRecognition.onresult = (event) => {
+                console.log('Voice result received for date:', event);
+                const result = event.results[0];
+                if (result.isFinal) {
+                    const transcript = result[0].transcript.trim();
+                    console.log('Final transcript for date:', transcript);
+                    if (transcript) {
+                        const parsedDate = parseSpokenDate(transcript);
+                        if (parsedDate) {
+                            document.getElementById('expiryDate').value = parsedDate;
+                            updateVoiceStatus('✓ Date set to: ' + parsedDate);
+                        } else {
+                            updateVoiceStatus('❌ Could not understand date. Try "tomorrow", "in 3 days", or "January 15"');
+                        }
+                        setTimeout(() => updateVoiceStatus(''), 3000);
+                    } else {
+                        updateVoiceStatus('❌ No speech detected. Try again.');
+                    }
+                }
+            };
+
+            voiceRecognition.onerror = (event) => {
+                console.error('Voice recognition error:', event.error);
+                let errorMessage = 'Voice recognition failed';
+                switch(event.error) {
+                    case 'no-speech':
+                        errorMessage = 'No speech detected. Try speaking louder.';
+                        break;
+                    case 'audio-capture':
+                        errorMessage = 'Microphone access denied. Please allow microphone access.';
+                        break;
+                    case 'not-allowed':
+                        errorMessage = 'Microphone permission denied. Please enable microphone access.';
+                        break;
+                    case 'network':
+                        errorMessage = 'Network error. Check your connection.';
+                        break;
+                    default:
+                        errorMessage = 'Error: ' + event.error;
+                }
+                updateVoiceStatus('❌ ' + errorMessage);
+                isListening = false;
+                updateVoiceBtn(false, 'voiceDateBtn');
+            };
+
+            voiceRecognition.onend = () => {
+                console.log('Voice recognition ended for date');
+                isListening = false;
+                updateVoiceBtn(false, 'voiceDateBtn');
+                setTimeout(() => updateVoiceStatus(''), 3000);
+            };
+
+            try {
+                voiceRecognition.start();
+                console.log('Voice recognition started for date');
+            } catch (e) {
+                console.error('Failed to start voice recognition:', e);
+                updateVoiceStatus('❌ Failed to start voice recognition');
+                isListening = false;
+                updateVoiceBtn(false, 'voiceDateBtn');
+            }
+        })
+        .catch((err) => {
+            console.error('Microphone permission denied:', err);
+            alert('Microphone access is required for voice input. Please allow microphone access and try again.');
+        });
+}
+
+// ===== PLANNER FUNCTIONALITY =====
+async function loadPlanner() {
+    try {
+        const res = await fetch(`${API_BASE}/planner`, { credentials: 'include' });
+        const plan = await res.json();
+        const container = document.getElementById('plannerContainer');
+        
+        if (!plan || plan.length === 0) {
+            container.innerHTML = '<p class="no-items">No items in planner. Add some items first!</p>';
+            return;
+        }
+        
+        container.innerHTML = '';
+        plan.forEach((slot, index) => {
+            const card = document.createElement('div');
+            card.className = 'planner-card';
+            
+            const dateObj = new Date(slot.date);
+            const daysFromNow = Math.ceil((dateObj - new Date()) / (1000 * 60 * 60 * 24));
+            let urgency = 'normal';
+            if (daysFromNow < 0) urgency = 'expired';
+            else if (daysFromNow <= 2) urgency = 'urgent';
+            
+            card.classList.add(`urgency-${urgency}`);
+            
+            const header = document.createElement('div');
+            header.className = 'planner-header';
+            
+            const dateStr = dateObj.toLocaleDateString('en-US', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' });
+            const urgencyIcon = urgency === 'expired' ? '✕' : (urgency === 'urgent' ? '⚠️' : '✓');
+            
+            header.innerHTML = `
+                <span class="planner-date">${dateStr}</span>
+                <span class="planner-days ${urgency}">${daysFromNow < 0 ? 'EXPIRED' : (daysFromNow + ' day' + (daysFromNow !== 1 ? 's' : ''))}</span>
+            `;
+            card.appendChild(header);
+            
+            const itemsList = document.createElement('div');
+            itemsList.className = 'planner-items';
+            
+            slot.items.forEach(item => {
+                const itemDiv = document.createElement('div');
+                itemDiv.className = 'planner-item';
+                itemDiv.innerHTML = `
+                    <span class="item-name clickable" onclick="suggestRecipe('${item.name.replace(/'/g, "\\'")}')">${item.name}</span>
+                    <div class="planner-item-actions">
+                        <button class="btn-small" onclick="suggestRecipe('${item.name.replace(/'/g, "\\'")}')">🔎 Recipes</button>
+                        <button class="btn-small" onclick="markItemConsumed('${item._id}')">✓ Consumed</button>
+                    </div>
+                `;
+                itemsList.appendChild(itemDiv);
+            });
+
+            card.appendChild(itemsList);
+            container.appendChild(card);
+        });
+    } catch (err) {
+        console.error('Error loading planner', err);
+        document.getElementById('plannerContainer').innerHTML = '<p class="no-items">Error loading planner</p>';
+    }
+}
+
+async function markItemConsumed(itemId) {
+    if (!confirm('Mark this item as consumed?')) return;
+    try {
+        await fetch(`${API_BASE}/items/${itemId}`, { method: 'DELETE', credentials: 'include' });
+        loadPlanner();
+        loadItems();
+    } catch (err) {
+        console.error('Error deleting item', err);
+        alert('Error marking item as consumed');
+    }
+}
+
+function suggestRecipe(itemName) {
+    // Open the AI Chat tab
+    const tabBtn = document.querySelector('.tab-btn[data-tab="ai-chat"]');
+    if (tabBtn) tabBtn.click();
+
+    setTimeout(async () => {
+        // Clear chat history for fresh recipe suggestion
+        const chatBox = document.getElementById('chatBox');
+        chatBox.innerHTML = '';
+
+        // Send recipe request directly
+        const message = `recipe for ${itemName}`;
+        appendChatMessage(message, true);
+
+        try {
+            const res = await fetch(`${API_BASE}/chat`, {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message })
+            });
+
+            const data = await res.json();
+            const replyText = data.reply || data.error || 'No response received';
+            appendChatMessage(replyText, false);
+        } catch (err) {
+            console.error('Chat error', err);
+            appendChatMessage('Sorry, I encountered an error. Please try again.', false);
+        }
+
+        // Clear input field
+        const input = document.getElementById('chatInput');
+        if (input) input.value = '';
+    }, 150);
+}
+
+// ===== RISK CHECK FUNCTIONALITY =====
+async function checkRisk() {
+    const input = document.getElementById('riskInput');
+    const productName = input.value.trim();
+    
+    if (!productName) {
+        alert('Please enter a product name');
+        return;
+    }
+    
+    try {
+        const res = await fetch(`${API_BASE}/risk?name=${encodeURIComponent(productName)}`, { credentials: 'include' });
+        const data = await res.json();
+        const resultDiv = document.getElementById('riskResult');
+        
+        if (data.count === 0) {
+            resultDiv.innerHTML = `<div class="risk-card">
+                <p>No purchase history for "${productName}"</p>
+                <p class="risk-info">Start tracking this product to see risk analysis.</p>
+            </div>`;
+            return;
+        }
+        
+        let riskColor = 'safe-text';
+        if (data.risk === 'high') riskColor = 'danger-text';
+        else if (data.risk === 'medium') riskColor = 'warn-text';
+        
+        resultDiv.innerHTML = `
+            <div class="risk-card">
+                <h3>Risk Analysis for "${productName}"</h3>
+                <div class="risk-grid">
+                    <div class="risk-item">
+                        <span class="risk-label">Risk Level</span>
+                        <span class="risk-value ${riskColor}">${data.risk.toUpperCase()}</span>
+                    </div>
+                    <div class="risk-item">
+                        <span class="risk-label">Avg Days to Expiry</span>
+                        <span class="risk-value">${data.avgDays} days</span>
+                    </div>
+                    <div class="risk-item">
+                        <span class="risk-label">Total Purchases</span>
+                        <span class="risk-value">${data.count}</span>
+                    </div>
+                    <div class="risk-item">
+                        <span class="risk-label">Expired Count</span>
+                        <span class="risk-value">${data.expiredCount}</span>
+                    </div>
+                </div>
+                <p class="risk-info">Based on ${data.count} historical purchase(s)</p>
+            </div>
+        `;
+    } catch (err) {
+        console.error('Error checking risk', err);
+        document.getElementById('riskResult').innerHTML = '<p class="no-items">Error checking risk</p>';
+    }
+}
+
+// ===== AI CHAT FUNCTIONALITY =====
+function appendChatMessage(message, isUser = false) {
+    const chatBox = document.getElementById('chatBox');
+    const msgDiv = document.createElement('div');
+    msgDiv.className = `chat-message ${isUser ? 'user-message' : 'bot-message'}`;
+    msgDiv.innerHTML = `<p>${message}</p>`;
+    chatBox.appendChild(msgDiv);
+    chatBox.scrollTop = chatBox.scrollHeight;
+}
+
+document.getElementById('sendBtn').addEventListener('click', async () => {
+    const input = document.getElementById('chatInput');
+    const message = input.value.trim();
+    
+    if (!message) return;
+    
+    appendChatMessage(message, true);
+    input.value = '';
+    
+    try {
+        const res = await fetch(`${API_BASE}/chat`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message })
+        });
+        
+        const data = await res.json();
+        appendChatMessage(data.reply || 'No response received', false);
+    } catch (err) {
+        console.error('Chat error', err);
+        appendChatMessage('Sorry, I encountered an error. Please try again.', false);
+    }
+});
+
+document.getElementById('chatInput').addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') {
+        document.getElementById('sendBtn').click();
+    }
+});
+
+// ===== ANALYTICS FUNCTIONALITY =====
+let statusChartInstance = null;
+
+async function loadAnalytics() {
+    try {
+        const res = await fetch(`${API_BASE}/items`, { credentials: 'include' });
+        const items = await res.json();
+        
+        if (!items || items.length === 0) {
+            document.getElementById('analytics').innerHTML = '<p class="no-items">No items to analyze. Add items to see analytics!</p>';
+            return;
+        }
+        
+        // Calculate statistics
+        const now = new Date();
+        let safeItems = 0;
+        let warningItems = 0;
+        let expiredItems = 0;
+        let itemFrequency = {};
+        
+        items.forEach(item => {
+            const expiry = new Date(item.expiryDate);
+            const daysUntil = Math.ceil((expiry - now) / (1000 * 60 * 60 * 24));
+            
+            if (daysUntil < 0) {
+                expiredItems++;
+            } else if (daysUntil <= 3) {
+                warningItems++;
+            } else {
+                safeItems++;
+            }
+            
+            itemFrequency[item.name] = (itemFrequency[item.name] || 0) + 1;
+        });
+        
+        // Draw status chart (pie chart)
+        drawStatusChart(safeItems, warningItems, expiredItems);
+        
+        // Show top items
+        drawTopItems(itemFrequency);
+        
+    } catch (err) {
+        console.error('Error loading analytics', err);
+        document.getElementById('analytics').innerHTML = '<p class="no-items">Error loading analytics</p>';
+    }
+}
+
+function drawStatusChart(safe, warning, expired) {
+    const ctx = document.getElementById('statusChart').getContext('2d');
+    
+    if (statusChartInstance) {
+        statusChartInstance.destroy();
+    }
+    
+    statusChartInstance = new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+            labels: ['Safe ✓', 'Warning ⚠️', 'Expired ✕'],
+            datasets: [{
+                data: [safe, warning, expired],
+                backgroundColor: [
+                    '#27ae60',
+                    '#f39c12',
+                    '#e74c3c'
+                ],
+                borderColor: '#fff',
+                borderWidth: 2
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            plugins: {
+                legend: {
+                    position: 'bottom',
+                    labels: { padding: 15, font: { size: 12 } }
+                }
+            }
+        }
+    });
+}
+
+function drawTopItems(itemFrequency) {
+    const sorted = Object.entries(itemFrequency)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5);
+    
+    const listEl = document.getElementById('topItemsList');
+    listEl.innerHTML = '';
+    
+    if (sorted.length === 0) {
+        listEl.innerHTML = '<p>No items tracked yet</p>';
+        return;
+    }
+    
+    sorted.forEach(([name, count]) => {
+        const item = document.createElement('div');
+        item.className = 'analytics-list-item';
+        item.innerHTML = `<span>${name}</span><span class="count">${count}x</span>`;
+        listEl.appendChild(item);
+    });
+}
+</script>
+</body>
+</html>

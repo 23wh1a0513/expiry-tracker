@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Purchase Risk Check - Expiry Tracker</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="app-header">
+    <div class="header-inner">
+        <a href="index.html" class="app-title">TrackMyExpiry AI</a>
+        <div class="header-actions">
+            <a href="login.html" class="login-link">Login</a>
+        </div>
+    </div>
+</header>
+<div class="container">
+    <section class="card">
+        <h3>Expiry Risk Before Purchase</h3>
+        <p>Enter a product name to estimate its expiry risk based on past entries.</p>
+        <label>Product name: <input id="productName" type="text" style="width:60%"></label>
+        <button id="checkBtn" class="btn">Check Risk</button>
+        <div id="riskResult" style="margin-top:12px"></div>
+    </section>
+</div>
+<script>
+const API_BASE = 'http://localhost:3000';
+document.getElementById('checkBtn').addEventListener('click', async () => {
+    const name = document.getElementById('productName').value.trim();
+    if (!name) return alert('Enter a product name');
+    const resDiv = document.getElementById('riskResult');
+    resDiv.innerHTML = 'Checking...';
+    try {
+        const res = await fetch(`${API_BASE}/risk?name=${encodeURIComponent(name)}`, { credentials: 'include' });
+        if (!res.ok) throw new Error('Request failed');
+        const j = await res.json();
+        if (j.count === 0) resDiv.innerHTML = '<div>No historical data — risk unknown</div>';
+        else resDiv.innerHTML = `<div><strong>Risk:</strong> ${j.risk.toUpperCase()}</div><div>Samples: ${j.count}</div><div>Avg days until expiry: ${j.avgDays}</div>`;
+    } catch (err) {
+        console.error(err);
+        resDiv.innerHTML = '<div>Error checking risk</div>';
+    }
+});
+</script>
+</body>
+</html>

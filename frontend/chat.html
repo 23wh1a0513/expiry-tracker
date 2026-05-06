@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AI Chat - Expiry Tracker</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="app-header">
+    <div class="header-inner">
+        <a href="index.html" class="app-title">TrackMyExpiry AI</a>
+        <div class="header-actions">
+            <a href="login.html" class="login-link">Login</a>
+        </div>
+    </div>
+</header>
+<div class="container">
+    <section class="card">
+        <h3>AI Chat</h3>
+        <div id="chat" style="min-height:200px;padding:8px;border:1px solid #eef"></div>
+        <div style="margin-top:8px;display:flex;gap:8px">
+            <input id="chatInput" style="flex:1;padding:8px;border-radius:8px;border:1px solid #e6e9f2">
+            <button id="voiceChatBtn" class="btn" style="padding:8px 12px">🎤</button>
+            <button id="sendBtn" class="btn">Send</button>
+        </div>
+    </section>
+</div>
+<script>
+const API_BASE = '';
+const chatEl = document.getElementById('chat');
+function append(msg, who='bot'){
+    const p = document.createElement('div');
+    p.style.marginBottom='8px';
+    p.textContent = (who==='user'? 'You: ' : 'Bot: ') + msg;
+    chatEl.appendChild(p);
+    chatEl.scrollTop = chatEl.scrollHeight;
+}
+document.getElementById('sendBtn').addEventListener('click', async ()=>{
+    // Check if user is logged in before sending
+    try {
+        const res = await fetch('/me', { credentials: 'include' });
+        if (!res.ok) {
+            alert('Please log in first to use the chat.');
+            window.location.href = 'login.html';
+            return;
+        }
+    } catch (err) {
+        alert('Please log in first to use the chat.');
+        window.location.href = 'login.html';
+        return;
+    }
+    
+    const input = document.getElementById('chatInput');
+    const text = input.value.trim(); if(!text) return;
+    append(text,'user'); input.value='';
+    append('Thinking...','bot');
+    try{
+        const res = await fetch(`${API_BASE}/chat`, {method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text})});
+        const j = await res.json();
+        // replace last bot 'Thinking...' with reply
+        chatEl.lastChild.textContent = 'Bot: ' + (j.reply || j.error || JSON.stringify(j));
+    }catch(err){
+        console.error('Chat error', err);
+        chatEl.lastChild.textContent = 'Bot: Error contacting assistant';
+    }
+});
+
+// Voice input for chat
+function initChatVoiceInput() {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+        console.warn('Speech recognition not supported in this browser');
+        document.getElementById('voiceChatBtn').style.display = 'none';
+        return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.lang = 'en-US';
+
+    const input = document.getElementById('chatInput');
+    const voiceBtn = document.getElementById('voiceChatBtn');
+
+    recognition.onstart = () => {
+        voiceBtn.textContent = '🎤 Listening...';
+        voiceBtn.style.backgroundColor = '#fff3cd';
+        input.placeholder = 'Listening for your question...';
+    };
+
+    recognition.onresult = (event) => {
+        const transcript = event.results[0][0].transcript;
+        input.value = transcript.trim();
+        voiceBtn.textContent = '🎤';
+        voiceBtn.style.backgroundColor = '';
+        input.placeholder = '';
+    };
+
+    recognition.onerror = (event) => {
+        console.error('Speech recognition error:', event.error);
+        alert('Voice input failed. Please try again.');
+        voiceBtn.textContent = '🎤';
+        voiceBtn.style.backgroundColor = '';
+        input.placeholder = '';
+    };
+
+    recognition.onend = () => {
+        voiceBtn.textContent = '🎤';
+        voiceBtn.style.backgroundColor = '';
+        input.placeholder = '';
+    };
+
+    voiceBtn.addEventListener('click', () => {
+        recognition.start();
+    });
+}
+
+// Initialize voice input when page loads
+initChatVoiceInput();
+</script>
+</body>
+</html>

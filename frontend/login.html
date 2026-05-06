@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Login - Expiry Tracker</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="app-header">
+    <div class="header-inner">
+        <a href="index.html" class="app-title">TrackMyExpiry AI</a>
+        <div class="header-actions" id="authActions">
+            <a href="login.html" class="login-link">Login</a>
+        </div>
+    </div>
+</header>
+<div class="auth-container">
+    <section class="auth-card">
+        <h3>Welcome back</h3>
+        <p style="margin:0 0 1.5rem;color:var(--gray);">Sign in to access your expiry dashboard.</p>
+
+        <form id="loginForm" class="auth-form">
+            <label>
+                Username
+                <input id="username" type="text" required autocomplete="username" placeholder="Your username">
+            </label>
+            <label>
+                Password
+                <input id="password" type="password" required autocomplete="current-password" placeholder="••••••••">
+            </label>
+
+            <div class="auth-actions">
+                <button id="loginBtn" class="btn btn-primary" type="submit">Login</button>
+                <button id="registerBtn" class="btn btn-secondary" type="button">Register</button>
+            </div>
+
+            <div id="loginMsg" class="auth-msg"></div>
+        </form>
+    </section>
+</div>
+<script>
+async function checkLoggedIn() {
+    try {
+        const res = await fetch('/me', { credentials: 'include' });
+        if (res.ok) {
+            window.location.href = 'index.html';
+        }
+    } catch (err) {
+        // ignore - user not logged in
+    }
+}
+
+document.addEventListener('DOMContentLoaded', checkLoggedIn);
+
+document.getElementById('loginForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const username = document.getElementById('username').value.trim();
+    const password = document.getElementById('password').value;
+    const msg = document.getElementById('loginMsg');
+    try {
+        const res = await fetch('/login', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password })
+        });
+        if (res.ok) {
+            window.location.href = 'index.html';
+        } else {
+            const j = await res.json().catch(()=>({message:res.statusText}));
+            msg.textContent = 'Login failed: ' + (j.message || 'Unknown');
+        }
+    } catch (err) {
+        msg.textContent = 'Error: ' + err.message;
+    }
+});
+
+document.getElementById('registerBtn').addEventListener('click', async () => {
+    const username = document.getElementById('username').value.trim();
+    const password = document.getElementById('password').value;
+    const msg = document.getElementById('loginMsg');
+    if (!username || !password) return msg.textContent = 'Enter username and password to register';
+    try {
+        const res = await fetch('/register', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password })
+        });
+        if (res.ok) {
+            window.location.href = 'index.html';
+        } else {
+            const j = await res.json().catch(()=>({message:res.statusText}));
+            msg.textContent = 'Register failed: ' + (j.message || 'Unknown');
+        }
+    } catch (err) {
+        msg.textContent = 'Error: ' + err.message;
+    }
+});
+</script>
+</body>
+</html>

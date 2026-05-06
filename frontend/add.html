@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Add Item - Expiry Tracker</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="app-header">
+    <div class="header-inner">
+        <a href="index.html" class="app-title">TrackMyExpiry AI</a>
+        <div class="header-actions">
+            <a href="login.html" class="login-link">Login</a>
+        </div>
+    </div>
+</header>
+<div class="container">
+    <section class="card">
+        <h3>Add Item</h3>
+        <form id="addForm">
+            <label>Name:
+                <div style="display:flex;gap:8px">
+                    <input type="text" name="name" required style="flex:1">
+                    <button type="button" id="voiceNameBtn" class="btn" style="padding:8px 12px">🎤</button>
+                </div>
+            </label>
+            <label>Expiry Date:
+                <div style="display:flex;gap:8px">
+                    <input type="date" name="expiryDate" required style="flex:1">
+                    <button type="button" id="voiceDateBtn" class="btn" style="padding:8px 12px">🎤</button>
+                </div>
+            </label>
+            <button class="btn" type="submit">Add</button>
+        </form>
+    </section>
+</div>
+<div class="container">
+    <section class="card">
+        <h3>Scan Receipt</h3>
+        <p>Upload a receipt image to auto-extract item lines. Review parsed items below and add expiry dates before saving.</p>
+        <input id="receiptFile" type="file" accept="image/*">
+        <button id="scanBtn" class="btn">Scan Receipt</button>
+        <div id="scanStatus" style="margin-top:8px"></div>
+        <div id="ocrStats" style="margin-top:6px;color:#666"></div>
+        <div id="processedPreview" style="margin-top:8px">
+            <img id="processedImg" style="max-width:100%;border:1px solid #ddd;display:none" alt="processed preview">
+        </div>
+        <ul id="ocrResults" style="list-style:none;padding:0;margin-top:12px"></ul>
+        <button id="bulkAddBtn" class="btn" style="display:none;margin-top:8px">Add Selected Items</button>
+        <div id="addResults" style="margin-top:12px"></div>
+    </section>
+</div>
+<script>
+const API_BASE = '';
+
+async function checkLoggedIn() {
+    try {
+        const res = await fetch('/me', { credentials: 'include' });
+        if (!res.ok) {
+            alert('Please log in first to add items.');
+            window.location.href = 'login.html';
+            return false;
+        }
+        return true;
+    } catch (err) {
+        alert('Please log in first to add items.');
+        window.location.href = 'login.html';
+        return false;
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    checkLoggedIn();
+});
+
+document.getElementById('addForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    
+    // Check if user is logged in before submitting
+    if (!(await checkLoggedIn())) return;
+    
+    const form = e.target;
+    const name = form.name.value;
+    const expiryDate = form.expiryDate.value;
+    
+    console.log('Submitting form with:', { name, expiryDate });
+    
+    try {
+        const res = await fetch(`${API_BASE}/items`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, expiryDate })
+        });
+        
+        console.log('Response status:', res.status);
+        
+        if (res.ok) {
+            const data = await res.json();
+            console.log('Item added successfully:', data);
+            alert('Item added successfully! Redirecting...');
+            setTimeout(() => {
+                window.location.href = 'index.html';
+            }, 500);
+        } else {
+            const err = await res.json().catch(() => ({ message: 'Unknown error' }));
+            console.error('API error:', err);
+            alert('Error: ' + (err.message || 'Failed to add'));
+        }
+    } catch (err) {
+        console.error('Add item error', err);
+        alert('Error adding item: ' + err.message);
+    }
+});
+
+// Receipt OCR integration using Tesseract.js
+let _tesseractWorker = null;
+async function ensureWorker() {
+    if (_tesseractWorker) return _tesseractWorker;
+    
+    if (!window.Tesseract) {
+        console.error('Tesseract.js not loaded!');
+        throw new Error('Tesseract.js library not loaded. Check network connection.');
+    }
+    
+    console.log('Creating Tesseract worker...');
+    const worker = await Tesseract.createWorker({
+        logger: m => {
+            const status = document.getElementById('scanStatus');
+            if (m.status && m.progress !== undefined && status) {
+                status.textContent = `${m.status} (${Math.round(m.progress * 100)}%)`;
+            }
+            console.debug('Tesseract log:', m);
+        }
+    });
+    console.log('Loading language...');
+    await worker.loadLanguage('eng');
+    console.log('Initializing Tesseract...');
+    await worker.initialize('eng');
+    console.log('Tesseract ready!');
+    _tesseractWorker = worker;
+    return worker;
+}
+
+async function runOCR(imageSource) {
+    const status = document.getElementById('scanStatus');
+    status.textContent = 'Starting OCR...';
+    try {
+        const worker = await ensureWorker();
+        console.log('Running OCR on image source:', typeof imageSource, imageSource);
+        
+        // Convert canvas to data URL if needed
+        let imageToProcess = imageSource;
+        if (imageSource instanceof HTMLCanvasElement) {
+            console.log('Converting canvas to data URL...');
+            imageToProcess = imageSource.toDataURL('image/png');
+            console.log('Data URL created, length:', imageToProcess.length);
+        }
+        
+        console.log('Calling worker.recognize...');
+        const result = await worker.recognize(imageToProcess);
+        console.log('OCR result:', result);
+        status.textContent = 'OCR complete';
+        
+        const raw = document.getElementById('ocrRaw');
+        const text = result.data && result.data.text ? result.data.text : '';
+        if (raw) raw.textContent = text || '[No text detected]';
+        
+        // show stats
+        const statsEl = document.getElementById('ocrStats');
+        if (statsEl) {
+            const words = (result.data && result.data.words) ? result.data.words.length : 0;
+            const lines = (result.data && result.data.lines) ? result.data.lines.length : 0;
+            statsEl.textContent = `Words: ${words} — Lines: ${lines}`;
+        }
+        
+        console.log('OCR text extracted:', text);
+        return text;
+    } catch (err) {
+        status.textContent = 'OCR failed: ' + err.message;
+        console.error('OCR error:', err);
+        const raw = document.getElementById('ocrRaw');
+        if (raw) raw.textContent = 'ERROR: ' + err.message;
+        throw err;
+    }
+}
+// Preprocess image: resize, convert to grayscale, increase contrast
+function preprocessImage(file, maxWidth = 1600) {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        const url = URL.createObjectURL(file);
+        img.onload = () => {
+            try {
+                const scale = Math.min(1, maxWidth / img.width);
+                const w = Math.floor(img.width * scale) || img.width;
+                const h = Math.floor(img.height * (w / img.width)) || img.height;
+                const canvas = document.createElement('canvas');
+                canvas.width = w;
+                canvas.height = h;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0, w, h);
+                // basic grayscale + contrast
+                const imgData = ctx.getImageData(0, 0, w, h);
+                const data = imgData.data;
+                // apply grayscale then contrast/brightness adjustment
+                const contrast = 1.4; // >1 increases contrast
+                const bias = -10; // small darken
+                for (let i = 0; i < data.length; i += 4) {
+                    const gray = (data[i] + data[i+1] + data[i+2]) / 3;
+                    let v = (gray - 128) * contrast + 128 + bias;
+                    v = Math.max(0, Math.min(255, v));
+                    data[i] = data[i+1] = data[i+2] = v;
+                }
+                ctx.putImageData(imgData, 0, 0);
+                URL.revokeObjectURL(url);
+                resolve(canvas);
+            } catch (e) {
+                URL.revokeObjectURL(url);
+                reject(e);
+            }
+        };
+        img.onerror = (e) => { URL.revokeObjectURL(url); reject(e); };
+        img.src = url;
+    });
+}
+
+function parseLines(text) {
+    if (!text) return [];
+    const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 2);
+    
+    // Filter to keep only food-related items
+    const foodKeywords = /rice|flour|milk|butter|cheese|egg|bread|oil|sugar|salt|spice|meat|chicken|fish|vegetable|tomato|onion|potato|carrot|bean|lentil|dal|wheat|cereal|tea|coffee|juice|water|yogurt|curd|cream|ghee|honey|jam|pickle|sauce|masala|powder|paste|snack|biscuit|chip|chocolate|candy|fruit|apple|mango|banana|orange|lemon|pineapple|papaya|watermelon|nuts|almond|cashew|peanut|dried|dry|fresh|frozen|canned/i;
+    
+    // Exclude: store names, empty lines, headers, and non-food
+    const excludeKeywords = /store|mart|shop|grocery|pharmacy|market|fresh|welcome|thank|total|subtotal|invoice|receipt|road|center|phone|email|address|rupees|₹|\$|time|date|cash|card|payment|id|no\.|st\.|amount|balance|change|item|qty|price|qty|sy/i;
+    
+    // Keep ONLY lines that:
+    // 1. Contain food keywords
+    // 2. Do NOT contain store/receipt metadata
+    // 3. Are not empty
+    return lines.filter(l => {
+        if (/^\s*[-=_\s]*$/.test(l)) return false; // Skip lines with only symbols
+        if (excludeKeywords.test(l)) return false; // Skip metadata and headers
+        return foodKeywords.test(l); // Keep only food items
+    });
+}
+
+// Clean up item name to show only the product name
+function cleanItemName(text) {
+    // Start with the raw text
+    let cleaned = text.trim();
+    
+    // Remove everything in parentheses
+    cleaned = cleaned.replace(/\s*\([^)]*\)/g, '');
+    
+    // Remove quantities and all numbers (kg, g, ml, l, pkt, pcs, etc.)
+    cleaned = cleaned.replace(/\s*\d+\s*(kg|g|mg|l|ml|pkt|pcs|pieces|pack|bottle|box|tin|can|jar|tube|gram|litre|liter)[\s\d]*/gi, '');
+    
+    // Remove any remaining numbers and special characters
+    cleaned = cleaned.replace(/\s*[\d.]+\s*[₹$e€]/g, ''); // Remove prices
+    
+    // Remove common OCR artifacts
+    cleaned = cleaned.replace(/^[^a-zA-Z]*/, ''); // Remove leading non-letters
+    cleaned = cleaned.replace(/[_\-=|;:,\.eE]+/g, ' '); // Replace symbols with space
+    
+    // Remove "The" and words that follow it
+    cleaned = cleaned.replace(/\s+(the|a|an|and|or|as|is|it|de|la|le)\s+.*/i, '');
+    
+    // Clean up multiple spaces
+    cleaned = cleaned.replace(/\s+/g, ' ').trim();
+    
+    // Remove single letters
+    const words = cleaned.split(' ').filter(w => w.length > 1);
+    return words.join(' ');
+}
+
+// Shelf life in days for different food items
+const shelfLife = {
+    'milk': 5, 'yogurt': 10, 'curd': 7, 'butter': 30, 'cheese': 14, 'cream': 7,
+    'bread': 4, 'biscuit': 90, 'snack': 60, 'chip': 60,
+    'rice': 365, 'flour': 180, 'wheat': 180, 'cereal': 180,
+    'oil': 365, 'ghee': 365, 'honey': 365,
+    'sugar': 365, 'salt': 365, 'masala': 365, 'powder': 180, 'paste': 90, 'sauce': 180,
+    'tea': 180, 'coffee': 180,
+    'juice': 14, 'water': 365,
+    'meat': 2, 'chicken': 2, 'fish': 1,
+    'vegetable': 7, 'tomato': 5, 'onion': 30, 'potato': 30, 'carrot': 30, 'bean': 30, 'lentil': 180, 'dal': 180,
+    'egg': 21,
+    'fruit': 7, 'apple': 21, 'mango': 7, 'banana': 5, 'orange': 21, 'lemon': 30, 'pineapple': 5, 'papaya': 5, 'watermelon': 7,
+    'nuts': 180, 'almond': 180, 'cashew': 180, 'peanut': 180,
+    'pickle': 365, 'jam': 365, 'dried': 180, 'dry': 180, 'frozen': 180, 'canned': 365
+};
+
+function getDefaultShelfLife(itemName) {
+    const name = itemName.toLowerCase();
+    for (const [keyword, days] of Object.entries(shelfLife)) {
+        if (name.includes(keyword)) {
+            return days;
+        }
+    }
+    return 30; // default 30 days if no match
+}
+
+function renderOCRResults(lines) {
+    const ul = document.getElementById('ocrResults');
+    ul.innerHTML = '';
+    lines.forEach((line, idx) => {
+        const cleanedName = cleanItemName(line);
+        
+        // Skip if cleaned name is empty or too short
+        if (!cleanedName || cleanedName.length < 2) return;
+        
+        const shelfDays = getDefaultShelfLife(cleanedName);
+        const today = new Date();
+        const expiryDate = new Date(today.getTime() + shelfDays * 24 * 60 * 60 * 1000);
+        const expiryString = expiryDate.toISOString().slice(0,10);
+        
+        const li = document.createElement('li');
+        li.style.marginBottom = '8px';
+        li.innerHTML = `
+            <label style="display:block">
+                <input type="checkbox" class="ocr-keep" data-idx="${idx}" checked>
+                <input type="text" class="ocr-name" value="${cleanedName}" style="width:50%">
+                <input type="date" class="ocr-date" value="${expiryString}" style="margin-left:8px">
+                <small style="margin-left:8px;color:#666">(${shelfDays} days)</small>
+            </label>
+        `;
+        ul.appendChild(li);
+    });
+    document.getElementById('bulkAddBtn').style.display = (ul.children.length > 0) ? 'inline-block' : 'none';
+}
+
+document.getElementById('scanBtn').addEventListener('click', async () => {
+    const fileInput = document.getElementById('receiptFile');
+    const status = document.getElementById('scanStatus');
+    if (!fileInput.files || fileInput.files.length === 0) {
+        alert('Please select an image file first');
+        return;
+    }
+    const file = fileInput.files[0];
+    try {
+        status.textContent = 'Preprocessing image...';
+        const processedCanvas = await preprocessImage(file);
+        // show processed preview (data URL from canvas)
+        const pi = document.getElementById('processedImg');
+        if (pi && processedCanvas) { pi.src = processedCanvas.toDataURL('image/png'); pi.style.display = 'block'; }
+        status.textContent = 'Preprocessing complete';
+        const text = await runOCR(processedCanvas);
+        const lines = parseLines(text);
+        if (!lines || lines.length === 0) {
+            status.textContent = 'No useful text detected — try a clearer photo or higher resolution image.';
+        }
+        // update stats if available
+        const statsEl = document.getElementById('ocrStats');
+        if (statsEl && text) {
+            statsEl.textContent = `Raw length: ${text.length} chars`;
+        }
+        renderOCRResults(lines);
+    } catch (err) {
+        console.error('Scan flow error', err);
+        status.textContent = 'Error during scan — try a different image or lighting';
+    }
+});
+
+document.getElementById('bulkAddBtn').addEventListener('click', async () => {
+    const keepBoxes = Array.from(document.querySelectorAll('.ocr-keep'));
+    const items = [];
+    keepBoxes.forEach(cb => {
+        if (!cb.checked) return;
+        const li = cb.closest('li');
+        const name = li.querySelector('.ocr-name').value.trim();
+        const expiryDate = li.querySelector('.ocr-date').value;
+        items.push({ name, expiryDate });
+    });
+    if (items.length === 0) {
+        alert('No items selected to add');
+        return;
+    }
+    // Ensure expiry dates exist; default to today if missing
+    const today = new Date().toISOString().slice(0,10);
+    for (const it of items) {
+        if (!it.expiryDate) {
+            it.expiryDate = today;
+        }
+    }
+    try {
+        const status = document.getElementById('scanStatus');
+        status.textContent = 'Adding items...';
+        const promises = items.map(i => fetch(`${API_BASE}/items`, {
+            method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(i)
+        }).then(async r => ({ ok: r.ok, status: r.status, body: await r.text().catch(()=>null) })).catch(err => ({ ok: false, error: err })));
+        const results = await Promise.all(promises);
+        const ok = results.every(r => r.ok);
+        console.log('Bulk add results', results);
+        const resultsDiv = document.getElementById('addResults');
+        resultsDiv.innerHTML = '';
+        results.forEach((r, i) => {
+            const p = document.createElement('div');
+            p.style.padding = '6px 8px';
+            p.style.border = '1px solid #eee';
+            p.style.marginBottom = '6px';
+            p.style.borderRadius = '4px';
+            const name = items[i].name || `Item ${i+1}`;
+            if (r.ok) {
+                p.style.background = '#e6ffed';
+                p.textContent = `${name}: OK (status ${r.status})`;
+            } else {
+                p.style.background = '#ffe6e6';
+                const body = r.body || (r.error && r.error.message) || 'No response body';
+                p.textContent = `${name}: FAILED (status ${r.status || 'ERR'}) - ${body}`;
+            }
+            resultsDiv.appendChild(p);
+        });
+        if (ok) {
+            status.textContent = 'All items added';
+            window.location.href = 'index.html';
+        } else {
+            status.textContent = 'Some items failed to add';
+            // leave results visible for inspection
+        }
+    } catch (err) {
+        console.error('Bulk add exception', err);
+        alert('Error adding items');
+    }
+});
+
+// Voice input functionality
+function initVoiceInput() {
+    // Check if browser supports speech recognition
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+        console.warn('Speech recognition not supported in this browser');
+        document.getElementById('voiceNameBtn').style.display = 'none';
+        document.getElementById('voiceDateBtn').style.display = 'none';
+        return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.lang = 'en-US';
+
+    let currentField = null;
+
+    recognition.onstart = () => {
+        currentField.style.backgroundColor = '#fff3cd';
+        currentField.placeholder = 'Listening...';
+    };
+
+    recognition.onresult = (event) => {
+        const transcript = event.results[0][0].transcript;
+        if (currentField.name === 'name') {
+            currentField.value = transcript.trim();
+        } else if (currentField.name === 'expiryDate') {
+            // Try to parse date from speech
+            const parsedDate = parseSpokenDate(transcript);
+            if (parsedDate) {
+                currentField.value = parsedDate;
+            } else {
+                alert('Could not understand the date. Please try again or use the date picker.');
+            }
+        }
+        currentField.style.backgroundColor = '';
+        currentField.placeholder = '';
+    };
+
+    recognition.onerror = (event) => {
+        console.error('Speech recognition error:', event.error);
+        alert('Voice input failed. Please try again.');
+        currentField.style.backgroundColor = '';
+        currentField.placeholder = '';
+    };
+
+    recognition.onend = () => {
+        currentField.style.backgroundColor = '';
+        currentField.placeholder = '';
+    };
+
+    document.getElementById('voiceNameBtn').addEventListener('click', () => {
+        currentField = document.querySelector('input[name="name"]');
+        recognition.start();
+    });
+
+    document.getElementById('voiceDateBtn').addEventListener('click', () => {
+        currentField = document.querySelector('input[name="expiryDate"]');
+        recognition.start();
+    });
+}
+
+function parseSpokenDate(transcript) {
+    const text = transcript.toLowerCase().trim();
+    const now = new Date();
+    
+    // Handle relative dates
+    if (text.includes('today')) {
+        return now.toISOString().slice(0, 10);
+    }
+    if (text.includes('tomorrow')) {
+        const tomorrow = new Date(now);
+        tomorrow.setDate(now.getDate() + 1);
+        return tomorrow.toISOString().slice(0, 10);
+    }
+    if (text.includes('day after tomorrow') || text.includes('day after')) {
+        const dayAfter = new Date(now);
+        dayAfter.setDate(now.getDate() + 2);
+        return dayAfter.toISOString().slice(0, 10);
+    }
+    
+    // Handle "in X days"
+    const daysMatch = text.match(/in (\d+) days?/);
+    if (daysMatch) {
+        const days = parseInt(daysMatch[1]);
+        const futureDate = new Date(now);
+        futureDate.setDate(now.getDate() + days);
+        return futureDate.toISOString().slice(0, 10);
+    }
+    
+    // Handle "next week"
+    if (text.includes('next week')) {
+        const nextWeek = new Date(now);
+        nextWeek.setDate(now.getDate() + 7);
+        return nextWeek.toISOString().slice(0, 10);
+    }
+    
+    // Handle specific dates like "January 15" or "Jan 15"
+    const monthNames = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+    const shortMonths = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+    
+    for (let i = 0; i < monthNames.length; i++) {
+        if (text.includes(monthNames[i]) || text.includes(shortMonths[i])) {
+            const dayMatch = text.match(/(\d+)/);
+            if (dayMatch) {
+                const day = parseInt(dayMatch[1]);
+                let year = now.getFullYear();
+                
+                // If the date has passed this year, assume next year
+                const dateThisYear = new Date(year, i, day);
+                if (dateThisYear < now) {
+                    year++;
+                }
+                
+                const date = new Date(year, i, day);
+                return date.toISOString().slice(0, 10);
+            }
+        }
+    }
+    
+    // Try to parse as MM/DD or DD/MM
+    const dateMatch = text.match(/(\d{1,2})[\/\-](\d{1,2})/);
+    if (dateMatch) {
+        const num1 = parseInt(dateMatch[1]);
+        const num2 = parseInt(dateMatch[2]);
+        let month, day;
+        
+        // Assume MM/DD if first number <= 12, otherwise DD/MM
+        if (num1 <= 12) {
+            month = num1 - 1;
+            day = num2;
+        } else {
+            month = num2 - 1;
+            day = num1;
+        }
+        
+        let year = now.getFullYear();
+        const date = new Date(year, month, day);
+        
+        // If date has passed, assume next year
+        if (date < now) {
+            year++;
+            date.setFullYear(year);
+        }
+        
+        return date.toISOString().slice(0, 10);
+    }
+    
+    return null; // Could not parse
+}
+
+// Initialize voice input when page loads
+initVoiceInput();
+</script>
+<script src="https://unpkg.com/tesseract.js@4.0.2/dist/tesseract.min.js"></script>
+</body>
+</html>
