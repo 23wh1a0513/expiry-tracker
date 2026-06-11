@@ -2,7 +2,7 @@
 
 ## 📦 About
 
-TrackMyExpiry AI is a modern, intelligent expiry date tracking application that helps you manage your inventory, reduce food waste, and make smarter purchasing decisions.
+Smart Grocery Expiry Tracker is a modern, intelligent expiry date tracking application that helps you manage your inventory, reduce food waste, and make smarter purchasing decisions.
 
 ## ✨ Key Features
 
