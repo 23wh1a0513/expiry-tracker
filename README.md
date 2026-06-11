@@ -1,4 +1,4 @@
-# 🎯 TrackMyExpiry AI - Complete Application
+# 🎯 Smart Grocery Expiry Tracker - Complete Application
 
 ## 📦 About
 
